@@ -2398,3 +2398,49 @@ button.game-card {
   width: 37px;
   height: 37px;
   border-radius: 50%;
+  background: #1a1512;
+  color: #f1b35b;
+  filter: drop-shadow(0 3px 2px rgba(22, 8, 2, 0.4));
+}
+
+@keyframes bomber-flame {
+  to { filter: brightness(1.2) saturate(1.15); transform: scale(0.94); }
+}
+
+@keyframes bomber-bomb-pulse {
+  50% { transform: scale(0.88); }
+}
+
+@media (max-width: 640px) {
+  .bomberman-stage {
+    padding: 9px;
+    border-radius: 16px;
+  }
+
+  .bomberman-grid { gap: 1px; padding: 3px; border-radius: 8px; }
+
+  .bomberman-controls {
+    align-items: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+  }
+
+  .d-pad {
+    grid-template: repeat(3, 37px) / repeat(3, 37px);
+  }
+
+  .d-pad button {
+    width: 37px;
+    height: 37px;
+    border-radius: 10px;
+    font-size: 19px;
+  }
+
+  .bomb-control {
+    min-height: 45px;
+    padding-inline: 12px;
+    font-size: 12px;
+  }
+
+  .bomb-control kbd { display: none; }
+}
