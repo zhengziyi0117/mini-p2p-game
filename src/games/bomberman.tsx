@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
   Bomb,
@@ -26,12 +26,17 @@ const QUICK_EMOJIS = ["👏", "😂", "😮", "👍", "🤔", "🔥", "🎉", "�
 
 type Direction = "up" | "down" | "left" | "right";
 type InputState = Record<Direction, boolean> & { placeBomb: boolean };
+type PowerupKind = "bomb" | "flame" | "speed" | "shield";
 type PlayerState = {
   x: number;
   y: number;
   alive: boolean;
+  maxBombs: number;
   bombsAvailable: number;
   flameLength: number;
+  speedLevel: number;
+  shield: boolean;
+  nextMoveAt: number;
 };
 type BombState = {
   id: string;
@@ -44,8 +49,14 @@ type ExplosionState = {
   cells: number[];
   expiresAt: number;
 };
+type PowerupState = {
+  id: string;
+  kind: PowerupKind;
+  x: number;
+  y: number;
+};
 type BomberState = {
-  version: 1;
+  version: 2;
   roundId: number;
   seed: number;
   tick: number;
@@ -54,11 +65,14 @@ type BomberState = {
   blocks: number[];
   bombs: BombState[];
   explosions: ExplosionState[];
+  powerups: PowerupState[];
   players: Record<PlayerColor, PlayerState>;
 };
 type ChatMessage = { id: string; sender: "self" | "opponent"; text: string };
 
 const EMPTY_INPUT: InputState = { up: false, down: false, left: false, right: false, placeBomb: false };
+const POWERUP_GLYPHS: Record<PowerupKind, string> = { bomb: "💣", flame: "🔥", speed: "⚡", shield: "🛡️" };
+const POWERUP_LABELS: Record<PowerupKind, string> = { bomb: "炸弹 +1", flame: "火焰 +1", speed: "速度提升", shield: "护盾" };
 
 function cellIndex(x: number, y: number) {
   return y * GRID_WIDTH + x;
@@ -89,7 +103,7 @@ function createInitialState(seed: number, roundId: number): BomberState {
     }
   }
   return {
-    version: 1,
+    version: 2,
     roundId,
     seed,
     tick: 0,
@@ -98,9 +112,10 @@ function createInitialState(seed: number, roundId: number): BomberState {
     blocks,
     bombs: [],
     explosions: [],
+    powerups: [],
     players: {
-      black: { x: 1, y: 1, alive: true, bombsAvailable: 1, flameLength: 2 },
-      white: { x: GRID_WIDTH - 2, y: GRID_HEIGHT - 2, alive: true, bombsAvailable: 1, flameLength: 2 },
+      black: { x: 1, y: 1, alive: true, maxBombs: 1, bombsAvailable: 1, flameLength: 2, speedLevel: 1, shield: false, nextMoveAt: 0 },
+      white: { x: GRID_WIDTH - 2, y: GRID_HEIGHT - 2, alive: true, maxBombs: 1, bombsAvailable: 1, flameLength: 2, speedLevel: 1, shield: false, nextMoveAt: 0 },
     },
   };
 }
@@ -116,6 +131,31 @@ function hasBlock(state: BomberState, index: number) {
 
 function hasBomb(state: BomberState, index: number) {
   return state.bombs.some((bomb) => cellIndex(bomb.x, bomb.y) === index);
+}
+
+function moveIntervalFor(player: PlayerState) {
+  if (player.speedLevel >= 3) return 65;
+  if (player.speedLevel === 2) return 82;
+  return 105;
+}
+
+function powerupDrop(seed: number, index: number): PowerupKind | null {
+  let value = (seed ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x85ebca6b) >>> 0;
+  value ^= value >>> 13;
+  if (value % 100 >= 32) return null;
+  return (["bomb", "flame", "speed", "shield"] as const)[value % 4];
+}
+
+function applyPowerup(player: PlayerState, kind: PowerupKind) {
+  if (kind === "bomb") {
+    player.maxBombs = Math.min(3, player.maxBombs + 1);
+    player.bombsAvailable = Math.min(player.maxBombs, player.bombsAvailable + 1);
+  }
+  if (kind === "flame") player.flameLength = Math.min(5, player.flameLength + 1);
+  if (kind === "speed") player.speedLevel = Math.min(3, player.speedLevel + 1);
+  if (kind === "shield") player.shield = true;
 }
 
 function canWalkTo(state: BomberState, color: PlayerColor, x: number, y: number) {
@@ -160,6 +200,7 @@ function stepHostState(current: BomberState, localInput: InputState, remoteInput
       black: { ...current.players.black },
       white: { ...current.players.white },
     },
+    powerups: current.powerups.map((powerup) => ({ ...powerup })),
   };
 
   for (const color of ["black", "white"] as const) {
@@ -167,13 +208,14 @@ function stepHostState(current: BomberState, localInput: InputState, remoteInput
     const input = color === "black" ? localInput : remoteInput;
     if (!player.alive) continue;
     const direction = directionForInput(input);
-    if (direction) {
+    if (direction && now >= player.nextMoveAt) {
       const nextX = player.x + direction[0];
       const nextY = player.y + direction[1];
       if (canWalkTo(next, color, nextX, nextY)) {
         player.x = nextX;
         player.y = nextY;
       }
+      player.nextMoveAt = now + moveIntervalFor(player);
     }
     if (input.placeBomb && player.bombsAvailable > 0 && !hasBomb(next, cellIndex(player.x, player.y))) {
       next.bombs.push({
@@ -193,15 +235,33 @@ function stepHostState(current: BomberState, localInput: InputState, remoteInput
   for (const bomb of exploding) {
     const cells = blastCells(next, bomb, next.players[bomb.owner].flameLength);
     cells.forEach((index) => blast.add(index));
-    next.players[bomb.owner].bombsAvailable = Math.min(2, next.players[bomb.owner].bombsAvailable + 1);
+    next.players[bomb.owner].bombsAvailable = Math.min(next.players[bomb.owner].maxBombs, next.players[bomb.owner].bombsAvailable + 1);
+    const destroyedBlocks = next.blocks.filter((index) => cells.includes(index));
     next.blocks = next.blocks.filter((index) => !cells.includes(index));
+    for (const index of destroyedBlocks) {
+      const kind = powerupDrop(next.seed, index);
+      if (kind) next.powerups.push({ id: `${next.roundId}-${index}`, kind, x: index % GRID_WIDTH, y: Math.floor(index / GRID_WIDTH) });
+    }
     next.explosions.push({ cells, expiresAt: now + 500 });
   }
 
   if (blast.size > 0) {
     for (const color of ["black", "white"] as const) {
       const player = next.players[color];
-      if (player.alive && blast.has(cellIndex(player.x, player.y))) player.alive = false;
+      if (player.alive && blast.has(cellIndex(player.x, player.y))) {
+        if (player.shield) player.shield = false;
+        else player.alive = false;
+      }
+    }
+  }
+
+  for (const color of ["black", "white"] as const) {
+    const player = next.players[color];
+    if (!player.alive) continue;
+    const pickupIndex = next.powerups.findIndex((powerup) => powerup.x === player.x && powerup.y === player.y);
+    if (pickupIndex >= 0) {
+      const [pickup] = next.powerups.splice(pickupIndex, 1);
+      applyPowerup(player, pickup.kind);
     }
   }
 
@@ -231,7 +291,7 @@ function normalizeInput(value: unknown): InputState {
 function isBomberState(value: unknown): value is BomberState {
   if (!value || typeof value !== "object") return false;
   const state = value as Partial<BomberState>;
-  return state.version === 1 && Array.isArray(state.players) === false && Boolean(state.players?.black) && Boolean(state.players?.white) && Array.isArray(state.blocks) && Array.isArray(state.bombs) && Array.isArray(state.explosions);
+  return state.version === 2 && Array.isArray(state.players) === false && Boolean(state.players?.black) && Boolean(state.players?.white) && Array.isArray(state.blocks) && Array.isArray(state.bombs) && Array.isArray(state.explosions) && Array.isArray(state.powerups);
 }
 
 function formatResult(state: BomberState, color: PlayerColor | undefined) {
@@ -389,14 +449,15 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     setState(initial);
     setMessage("地图已生成，移动起来，别把自己炸了。 ");
     const timer = window.setInterval(() => {
-      const next = stepHostState(stateRef.current, localInputRef.current, remoteInputRef.current, Date.now());
+      const previous = stateRef.current;
+      const next = stepHostState(previous, localInputRef.current, remoteInputRef.current, Date.now());
       localInputRef.current = { ...localInputRef.current, placeBomb: false };
       remoteInputRef.current = { ...remoteInputRef.current, placeBomb: false };
       stateRef.current = next;
       setState(next);
       sendRef.current({ type: "bomberman-state", roundId: next.roundId, payload: next });
-      if (next.status === "finished") setMessage(formatResult(next, currentMatch.color));
-    }, 100);
+      if (next.status === "finished" && previous.status !== "finished") setMessage(formatResult(next, currentMatch.color));
+    }, 50);
     return () => window.clearInterval(timer);
   }, [currentMatch, isHost, isOnline, round, setMessage]);
 
@@ -413,6 +474,16 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     if (isHostRef.current) updateInput({ placeBomb: true });
     else sendRef.current({ type: "bomberman-input", roundId: roundRef.current, payload: { input: { ...localInputRef.current, placeBomb: true } } });
   }, [isOnline, updateInput]);
+
+  useEffect(() => {
+    if (!isOnline || isHost) return;
+    const heartbeat = window.setInterval(() => {
+      const input = localInputRef.current;
+      if (!input.up && !input.down && !input.left && !input.right) return;
+      sendRef.current({ type: "bomberman-input", roundId: roundRef.current, payload: { input } });
+    }, 70);
+    return () => window.clearInterval(heartbeat);
+  }, [isHost, isOnline]);
 
   useEffect(() => {
     const keyMap: Record<string, Direction> = { ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down", ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right" };
@@ -433,11 +504,14 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
       event.preventDefault();
       updateInput({ [direction]: false });
     };
+    const onWindowBlur = () => updateInput({ up: false, down: false, left: false, right: false, placeBomb: false });
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onWindowBlur);
     };
   }, [isOnline, triggerBomb, updateInput]);
 
@@ -484,6 +558,10 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const isBusy = p2p.phase === "matching" || p2p.phase === "room-waiting" || p2p.phase === "connecting";
   const canPlay = p2p.isOnline && state.status === "playing";
   const boardCells = useMemo(() => Array.from({ length: GRID_WIDTH * GRID_HEIGHT }, (_, index) => index), []);
+  const blocks = useMemo(() => new Set(state.blocks), [state.blocks]);
+  const bombs = useMemo(() => new Map(state.bombs.map((bomb) => [cellIndex(bomb.x, bomb.y), bomb])), [state.bombs]);
+  const explosions = useMemo(() => new Set(state.explosions.flatMap((explosion) => explosion.cells)), [state.explosions]);
+  const powerups = useMemo(() => new Map(state.powerups.map((powerup) => [cellIndex(powerup.x, powerup.y), powerup])), [state.powerups]);
 
   const copyRoomCode = useCallback(async () => {
     if (!activeRoomCode) return;
@@ -520,20 +598,20 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
               {boardCells.map((index) => {
                 const x = index % GRID_WIDTH;
                 const y = Math.floor(index / GRID_WIDTH);
-                const black = state.players.black;
-                const white = state.players.white;
-                const bomb = state.bombs.find((item) => cellIndex(item.x, item.y) === index);
-                const exploding = state.explosions.some((item) => item.cells.includes(index));
-                const block = state.blocks.includes(index);
+                const bomb = bombs.get(index);
+                const powerup = powerups.get(index);
+                const exploding = explosions.has(index);
+                const block = blocks.has(index);
                 const wall = isWall(x, y);
-                return (
-                  <div className={`bomber-cell ${wall ? "is-wall" : block ? "is-block" : "is-floor"} ${exploding ? "is-explosion" : ""}`} key={index} role="gridcell" aria-label={`${x + 1}列${y + 1}行`}>
-                    {bomb && <span className="bomber-bomb"><Bomb size={20} /></span>}
-                    {black.alive && black.x === x && black.y === y && <span className="bomber-player player-black"><i>你</i></span>}
-                    {white.alive && white.x === x && white.y === y && <span className="bomber-player player-white"><i>{myColor === "white" ? "你" : "对"}</i></span>}
-                  </div>
-                );
+                return <div className={`bomber-cell ${wall ? "is-wall" : block ? "is-block" : "is-floor"} ${exploding ? "is-explosion" : ""}`} key={index} role="gridcell" aria-label={`${x + 1}列${y + 1}行${powerup ? `，${POWERUP_LABELS[powerup.kind]}` : ""}`}>
+                  {powerup && <span className={`bomber-powerup powerup-${powerup.kind}`} title={POWERUP_LABELS[powerup.kind]}>{POWERUP_GLYPHS[powerup.kind]}</span>}
+                  {bomb && <span className="bomber-bomb"><Bomb size={20} /></span>}
+                </div>;
               })}
+              <div className="bomberman-actors" aria-hidden="true">
+                {state.players.black.alive && <span className="bomber-player player-black" style={{ "--actor-x": state.players.black.x, "--actor-y": state.players.black.y } as CSSProperties}><i>你</i></span>}
+                {state.players.white.alive && <span className="bomber-player player-white" style={{ "--actor-x": state.players.white.x, "--actor-y": state.players.white.y } as CSSProperties}><i>{myColor === "white" ? "你" : "对"}</i></span>}
+              </div>
             </div>
             {!p2p.isOnline && (
               <div className="bomberman-overlay">
@@ -545,12 +623,19 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
             {lastEmoji && <div className={`emoji-burst emoji-${lastEmoji.sender}`} aria-live="polite"><span>{lastEmoji.emoji}</span><small>{lastEmoji.sender === "self" ? "你" : opponentLabel}</small></div>}
           </div>
 
+          <div className="bomberman-hud" aria-label="道具状态">
+            <span><b>💣</b> {myPlayer?.bombsAvailable ?? 1}/{myPlayer?.maxBombs ?? 1}</span>
+            <span><b>🔥</b> {myPlayer?.flameLength ?? 2}</span>
+            <span><b>⚡</b> {myPlayer?.speedLevel ?? 1}</span>
+            <span className={myPlayer?.shield ? "has-powerup" : ""}><b>🛡️</b> {myPlayer?.shield ? "有" : "无"}</span>
+          </div>
+
           <div className="bomberman-controls" aria-label="移动控制">
             <div className="d-pad">
-              <button type="button" aria-label="向上移动" onPointerDown={() => holdDirection("up", true)} onPointerUp={() => holdDirection("up", false)} onPointerLeave={() => holdDirection("up", false)}>↑</button>
-              <button type="button" aria-label="向左移动" onPointerDown={() => holdDirection("left", true)} onPointerUp={() => holdDirection("left", false)} onPointerLeave={() => holdDirection("left", false)}>←</button>
-              <button type="button" aria-label="向下移动" onPointerDown={() => holdDirection("down", true)} onPointerUp={() => holdDirection("down", false)} onPointerLeave={() => holdDirection("down", false)}>↓</button>
-              <button type="button" aria-label="向右移动" onPointerDown={() => holdDirection("right", true)} onPointerUp={() => holdDirection("right", false)} onPointerLeave={() => holdDirection("right", false)}>→</button>
+              <button type="button" aria-label="向上移动" onPointerDown={() => holdDirection("up", true)} onPointerUp={() => holdDirection("up", false)} onPointerCancel={() => holdDirection("up", false)} onPointerLeave={() => holdDirection("up", false)}>↑</button>
+              <button type="button" aria-label="向左移动" onPointerDown={() => holdDirection("left", true)} onPointerUp={() => holdDirection("left", false)} onPointerCancel={() => holdDirection("left", false)} onPointerLeave={() => holdDirection("left", false)}>←</button>
+              <button type="button" aria-label="向下移动" onPointerDown={() => holdDirection("down", true)} onPointerUp={() => holdDirection("down", false)} onPointerCancel={() => holdDirection("down", false)} onPointerLeave={() => holdDirection("down", false)}>↓</button>
+              <button type="button" aria-label="向右移动" onPointerDown={() => holdDirection("right", true)} onPointerUp={() => holdDirection("right", false)} onPointerCancel={() => holdDirection("right", false)} onPointerLeave={() => holdDirection("right", false)}>→</button>
             </div>
             <button className="bomb-control" type="button" disabled={!canPlay} onClick={triggerBomb}><Bomb size={18} /> 放炸弹 <kbd>Space</kbd></button>
           </div>
