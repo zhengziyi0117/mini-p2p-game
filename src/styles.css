@@ -263,33 +263,56 @@ input:focus-visible {
 }
 
 .board-grid {
-  display: grid;
-  grid-template-columns: repeat(15, minmax(0, 1fr));
+  --board-inset: 3.1%;
+  position: relative;
+  display: block;
   aspect-ratio: 1;
-  padding: 3.1%;
+  overflow: hidden;
   border: 1px solid rgba(81, 47, 15, 0.4);
   border-radius: 7px;
   background-color: var(--board);
   background-image:
-    linear-gradient(to right, var(--board-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--board-line) 1px, transparent 1px),
     radial-gradient(circle at 25% 20%, rgba(255, 225, 157, 0.28), transparent 32%),
     linear-gradient(105deg, rgba(83, 44, 10, 0.07) 0 1px, transparent 1px 9px);
-  background-size: calc(100% / 14) calc(100% / 14), calc(100% / 14) calc(100% / 14), auto, 10px 10px;
+  background-size: auto, 10px 10px;
   box-shadow: inset 0 0 26px rgba(83, 45, 14, 0.18);
 }
 
+.board-lines,
+.board-cells {
+  position: absolute;
+  inset: var(--board-inset);
+  border-radius: 2px;
+}
+
+.board-lines {
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--board-line) 0 1px, transparent 1px 100%),
+    linear-gradient(to bottom, var(--board-line) 0 1px, transparent 1px 100%);
+  background-position: 0 0;
+  background-repeat: repeat;
+  background-size: calc(100% / 14) 100%, 100% calc(100% / 14);
+}
+
+.board-cells {
+  pointer-events: none;
+}
+
 .board-cell {
-  position: relative;
+  position: absolute;
   display: grid;
   place-items: center;
-  min-width: 0;
-  aspect-ratio: 1;
+  width: calc(100% / 14);
+  height: calc(100% / 14);
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
   cursor: default;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  z-index: 1;
 }
 
 .board-cell.cell-available {
@@ -306,6 +329,17 @@ input:focus-visible {
   border: 2px solid rgba(189, 61, 45, 0.7);
   border-radius: 50%;
   transform: translate(-50%, -50%);
+}
+
+.board-cell.opponent-hover::after {
+  content: "";
+  position: absolute;
+  inset: 9%;
+  border: 2px dashed rgba(255, 247, 219, 0.94);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(189, 61, 45, 0.22);
+  animation: hover-pulse 1.1s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .stone {
@@ -399,6 +433,42 @@ input:focus-visible {
 
 .footer-separator {
   color: rgba(29, 28, 26, 0.3);
+}
+
+.emoji-burst {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px 7px 8px;
+  border: 1px solid rgba(255, 250, 240, 0.45);
+  border-radius: 999px;
+  background: rgba(29, 28, 26, 0.78);
+  color: #fffaf0;
+  box-shadow: 0 10px 22px rgba(29, 28, 26, 0.2);
+  animation: emoji-pop 220ms ease both;
+  backdrop-filter: blur(6px);
+}
+
+.emoji-burst span {
+  font-size: 25px;
+  line-height: 1;
+}
+
+.emoji-burst small {
+  max-width: 110px;
+  overflow: hidden;
+  color: rgba(255, 250, 240, 0.78);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emoji-opponent {
+  border-color: rgba(229, 182, 105, 0.75);
 }
 
 .control-panel {
@@ -887,6 +957,249 @@ input:focus-visible {
   text-align: center;
 }
 
+.chat-dock {
+  position: relative;
+  margin-top: 17px;
+}
+
+.chat-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(189, 61, 45, 0.2);
+  border-radius: 11px;
+  background: rgba(247, 239, 229, 0.72);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.chat-toggle:hover {
+  background: #f8e7d9;
+  transform: translateY(-1px);
+}
+
+.chat-toggle-hint {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chat-unread {
+  display: grid;
+  place-items: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fffaf0;
+  font-size: 10px;
+}
+
+.chat-panel {
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 253, 248, 0.92);
+  box-shadow: 0 10px 24px rgba(70, 51, 31, 0.1);
+  animation: chat-in 160ms ease both;
+}
+
+.chat-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 11px 12px 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-panel-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.chat-panel-heading strong {
+  font-size: 12px;
+}
+
+.chat-panel-heading span,
+.chat-status {
+  color: #9c9285;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chat-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.chat-status i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #b8afa4;
+}
+
+.chat-status.online {
+  color: var(--green);
+}
+
+.chat-status.online i {
+  background: var(--green);
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 68px;
+  max-height: 168px;
+  padding: 10px 11px;
+  overflow-y: auto;
+  background: rgba(247, 239, 229, 0.42);
+}
+
+.chat-empty {
+  align-self: center;
+  margin: auto;
+  color: #a39a8e;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.chat-message {
+  max-width: 86%;
+  padding: 7px 9px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.chat-message.from-self {
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  background: var(--red);
+  color: #fffaf0;
+}
+
+.chat-message.from-opponent {
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  background: #eee8df;
+  color: var(--ink);
+}
+
+.emoji-toolbar {
+  position: relative;
+  padding: 7px 10px 0;
+}
+
+.emoji-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.emoji-toggle:hover,
+.emoji-toggle.active {
+  background: #f3eadf;
+  color: var(--red);
+}
+
+.emoji-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 5px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fffdf8;
+}
+
+.emoji-picker button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.emoji-picker button:hover {
+  background: #f3eadf;
+  transform: scale(1.08);
+}
+
+.chat-compose {
+  display: flex;
+  gap: 7px;
+  padding: 8px 10px 10px;
+}
+
+.chat-compose input {
+  min-width: 0;
+  flex: 1;
+  min-height: 35px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.chat-compose input:focus {
+  border-color: rgba(189, 61, 45, 0.5);
+}
+
+.chat-compose button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 35px;
+  min-height: 35px;
+  border: 1px solid var(--red-dark);
+  border-radius: 8px;
+  background: var(--red);
+  color: #fffaf0;
+  cursor: pointer;
+}
+
+.chat-compose button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .status-message {
   min-height: 22px;
   margin-top: 16px;
@@ -950,6 +1263,20 @@ input:focus-visible {
   to { opacity: 1; }
 }
 
+@keyframes hover-pulse {
+  50% { opacity: 0.48; transform: scale(0.9); }
+}
+
+@keyframes emoji-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.88); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes chat-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (max-width: 880px) {
   .game-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -1000,7 +1327,8 @@ input:focus-visible {
   }
 
   .board-grid {
-    padding: 3.4%;
+    --board-inset: 3.4%;
+    padding: 0;
   }
 
   .board-footer {
