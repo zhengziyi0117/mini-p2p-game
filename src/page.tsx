@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
+  Bomb,
   Check,
   ChevronDown,
   ChevronUp,
@@ -24,12 +25,13 @@ import {
   Undo2,
   Users,
 } from "lucide-react";
+import { BombermanGame } from "./games/bomberman";
 
 type Color = "black" | "white";
 type Cell = Color | null;
 type Phase = "idle" | "matching" | "room-waiting" | "connecting" | "playing" | "finished" | "error";
 type MatchMode = "quick" | "room";
-type GameId = "gomoku";
+type GameId = "gomoku" | "bomberman";
 type MoveRecord = { index: number; color: Color };
 type ChatMessage = { id: string; sender: "self" | "opponent"; text: string; sentAt: number };
 type EmojiSender = "self" | "opponent";
@@ -648,7 +650,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
       matchPollingRef.current = true;
       try {
         while (matchPollingRef.current && (phaseRef.current === "matching" || phaseRef.current === "room-waiting")) {
-          const result = await fetch(apiUrl(`/api/match?playerId=${encodeURIComponent(nextPlayerId)}`), { cache: "no-store" });
+          const result = await fetch(apiUrl(`/api/match?gameId=gomoku&playerId=${encodeURIComponent(nextPlayerId)}`), { cache: "no-store" });
           if (!result.ok) throw new Error("匹配服务暂时不可用。 ");
           const data = (await result.json()) as { status?: string; match?: MatchInfo };
           if (data.match) {
@@ -691,7 +693,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
       const result = await fetch(apiUrl("/api/match"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "join", playerId: playerIdRef.current, nickname: cleanName }),
+        body: JSON.stringify({ action: "join", gameId: "gomoku", playerId: playerIdRef.current, nickname: cleanName }),
       });
       const data = (await result.json()) as { status?: string; match?: MatchInfo; error?: string };
       if (!result.ok) throw new Error(data.error ?? "匹配服务暂时不可用。 ");
@@ -730,7 +732,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
       const result = await fetch(apiUrl("/api/match"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create_room", playerId: playerIdRef.current, nickname: cleanName }),
+        body: JSON.stringify({ action: "create_room", gameId: "gomoku", playerId: playerIdRef.current, nickname: cleanName }),
       });
       const data = (await result.json()) as { status?: string; roomCode?: string; error?: string };
       if (!result.ok || !data.roomCode) throw new Error(data.error ?? "房间创建失败，请稍后重试。 ");
@@ -775,7 +777,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
       const result = await fetch(apiUrl("/api/match"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "join_room", roomCode: cleanCode, playerId: playerIdRef.current, nickname: cleanName }),
+        body: JSON.stringify({ action: "join_room", gameId: "gomoku", roomCode: cleanCode, playerId: playerIdRef.current, nickname: cleanName }),
       });
       const data = (await result.json()) as { status?: string; roomCode?: string; match?: MatchInfo; error?: string };
       if (!result.ok) throw new Error(data.error ?? "加入房间失败，请检查房间号。 ");
@@ -1286,6 +1288,14 @@ const GAME_CATALOG = [
     available: true,
   },
   {
+    id: "bomberman" as const,
+    name: "双人炸弹人",
+    description: "固定地图实时对战，移动、放置炸弹，和朋友一起找出口。",
+    players: "2 人",
+    status: "可游玩",
+    available: true,
+  },
+  {
     id: "reversi",
     name: "黑白棋",
     description: "共享同一套 P2P 匹配与房间能力。",
@@ -1331,7 +1341,7 @@ function GameHub({ onSelect }: { onSelect: (game: GameId) => void }) {
           <p>每个小游戏共用 P2P 匹配、好友房间和直连通信能力。选中游戏后，再决定随机匹配或邀请朋友。</p>
         </div>
         <div className="hub-summary" aria-label="游戏平台信息">
-          <div><strong>1</strong><span>款可游玩</span></div>
+          <div><strong>2</strong><span>款可游玩</span></div>
           <div><strong>P2P</strong><span>对局直连</span></div>
           <div><strong>0</strong><span>注册步骤</span></div>
         </div>
@@ -1339,20 +1349,20 @@ function GameHub({ onSelect }: { onSelect: (game: GameId) => void }) {
 
       <section className="game-catalog" aria-label="小游戏列表">
         {GAME_CATALOG.map((game) => game.available ? (
-          <button className="game-card game-card-available" type="button" key={game.id} onClick={() => onSelect("gomoku")}>
-            <div className="game-card-visual gomoku-card-visual" aria-hidden="true">
-              <div className="gomoku-mini-board">
+          <button className="game-card game-card-available" type="button" key={game.id} onClick={() => onSelect(game.id as GameId)}>
+            <div className={`game-card-visual ${game.id === "gomoku" ? "gomoku-card-visual" : "bomberman-card-visual"}`} aria-hidden="true">
+              {game.id === "gomoku" ? <div className="gomoku-mini-board">
                 <span className="mini-stone mini-black stone-one" />
                 <span className="mini-stone mini-white stone-two" />
                 <span className="mini-stone mini-black stone-three" />
                 <span className="mini-stone mini-white stone-four" />
                 <span className="mini-stone mini-black stone-five" />
-              </div>
+              </div> : <div className="bomberman-mini-map"><span /><span /><span /><span /><Bomb size={34} /></div>}
               <span className="available-badge"><span />在线</span>
             </div>
             <div className="game-card-content">
               <div className="game-card-title">
-                <span className="game-icon"><Grid3X3 size={20} /></span>
+                <span className="game-icon">{game.id === "gomoku" ? <Grid3X3 size={20} /> : <Bomb size={20} />}</span>
                 <div><strong>{game.name}</strong><span>{game.status}</span></div>
               </div>
               <p>{game.description}</p>
@@ -1391,7 +1401,11 @@ export default function Home() {
   const [selectedGame, setSelectedGame] = useState<GameId | null>(null);
 
   useEffect(() => {
-    const syncRoute = () => setSelectedGame(window.location.hash === "#gomoku" ? "gomoku" : null);
+    const syncRoute = () => {
+      if (window.location.hash === "#gomoku") setSelectedGame("gomoku");
+      else if (window.location.hash === "#bomberman") setSelectedGame("bomberman");
+      else setSelectedGame(null);
+    };
     syncRoute();
     window.addEventListener("hashchange", syncRoute);
     return () => window.removeEventListener("hashchange", syncRoute);
@@ -1407,5 +1421,7 @@ export default function Home() {
     setSelectedGame(null);
   }, []);
 
-  return selectedGame === "gomoku" ? <GomokuGame onBack={backToHub} /> : <GameHub onSelect={openGame} />;
+  if (selectedGame === "gomoku") return <GomokuGame onBack={backToHub} />;
+  if (selectedGame === "bomberman") return <BombermanGame onBack={backToHub} />;
+  return <GameHub onSelect={openGame} />;
 }
