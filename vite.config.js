@@ -7,5 +7,8 @@ export default defineConfig({
   build: {
     outDir: "docs",
     emptyOutDir: true,
+    rollupOptions: {
+      input: "source.html",
+    },
   },
 });
