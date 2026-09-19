@@ -2113,6 +2113,7 @@ button.game-card {
 }
 
 .bomberman-grid {
+  position: relative;
   display: grid;
   gap: 2px;
   aspect-ratio: 13 / 11;
@@ -2123,6 +2124,15 @@ button.game-card {
   background: #30251c;
   box-shadow: inset 0 0 28px rgba(19, 12, 7, 0.22);
   touch-action: none;
+}
+
+.bomberman-actors {
+  --cell-gap: 2px;
+  --cell-size: calc((100% - (12 * var(--cell-gap))) / 13);
+  position: absolute;
+  inset: 4px;
+  z-index: 6;
+  pointer-events: none;
 }
 
 .bomber-cell {
@@ -2208,10 +2218,40 @@ button.game-card {
   stroke-width: 1.5;
 }
 
+.bomber-powerup {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 76%;
+  height: 76%;
+  border: 1px solid rgba(255, 249, 225, 0.68);
+  border-radius: 38%;
+  background: rgba(48, 33, 22, 0.72);
+  box-shadow: 0 3px 6px rgba(49, 22, 6, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  font-size: clamp(11px, 1.8vw, 20px);
+  line-height: 1;
+  animation: bomber-powerup-float 900ms ease-in-out infinite alternate;
+}
+
+.powerup-bomb { background: rgba(57, 31, 26, 0.84); }
+.powerup-flame { background: rgba(154, 66, 24, 0.84); }
+.powerup-speed { background: rgba(36, 92, 102, 0.84); }
+.powerup-shield { background: rgba(62, 60, 109, 0.84); }
+
 .bomber-player {
   border: 2px solid rgba(255, 250, 235, 0.72);
   border-radius: 36% 36% 46% 46%;
   box-shadow: 0 4px 4px rgba(42, 22, 7, 0.28), inset 0 2px 3px rgba(255, 255, 255, 0.32);
+}
+
+.bomberman-actors .bomber-player {
+  left: calc(var(--actor-x) * (var(--cell-size) + var(--cell-gap)) + var(--cell-size) / 2);
+  top: calc(var(--actor-y) * (var(--cell-size) + var(--cell-gap)) + var(--cell-size) / 2);
+  width: calc(var(--cell-size) * 0.74);
+  height: calc(var(--cell-size) * 0.74);
+  transform: translate(-50%, -50%);
+  transition: left 70ms linear, top 70ms linear;
 }
 
 .bomber-player::before,
@@ -2294,6 +2334,41 @@ button.game-card {
   gap: 22px;
   width: min(100%, 820px);
   margin: 25px auto 0;
+}
+
+.bomberman-hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: min(100%, 820px);
+  margin: 16px auto 0;
+}
+
+.bomberman-hud span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(92, 55, 27, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.72);
+  color: #604a35;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bomberman-hud span.has-powerup {
+  border-color: rgba(77, 74, 157, 0.42);
+  background: rgba(221, 222, 255, 0.7);
+  color: #35336e;
+}
+
+.bomberman-hud b {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .d-pad {
@@ -2408,6 +2483,10 @@ button.game-card {
   50% { transform: scale(0.88); }
 }
 
+@keyframes bomber-powerup-float {
+  to { transform: translateY(-2px) scale(1.04); }
+}
+
 @media (max-width: 640px) {
   .bomberman-stage {
     padding: 9px;
@@ -2415,6 +2494,12 @@ button.game-card {
   }
 
   .bomberman-grid { gap: 1px; padding: 3px; border-radius: 8px; }
+
+  .bomberman-actors {
+    --cell-gap: 1px;
+    --cell-size: calc((100% - (12 * var(--cell-gap))) / 13);
+    inset: 3px;
+  }
 
   .bomberman-controls {
     align-items: flex-end;
@@ -2440,4 +2525,16 @@ button.game-card {
   }
 
   .bomb-control kbd { display: none; }
+
+  .bomberman-hud {
+    justify-content: flex-start;
+    gap: 5px;
+    margin-top: 12px;
+  }
+
+  .bomberman-hud span {
+    min-height: 27px;
+    padding-inline: 8px;
+    font-size: 11px;
+  }
 }
