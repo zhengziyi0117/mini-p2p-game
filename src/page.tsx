@@ -2,9 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ArrowLeft,
   Check,
+  ChevronDown,
+  ChevronUp,
   CircleHelp,
   Copy,
+  Gamepad2,
+  Grid3X3,
   KeyRound,
   LoaderCircle,
   LogOut,
@@ -18,16 +23,17 @@ import {
   SmilePlus,
   Undo2,
   Users,
-  X,
 } from "lucide-react";
 
 type Color = "black" | "white";
 type Cell = Color | null;
 type Phase = "idle" | "matching" | "room-waiting" | "connecting" | "playing" | "finished" | "error";
 type MatchMode = "quick" | "room";
+type GameId = "gomoku";
 type MoveRecord = { index: number; color: Color };
 type ChatMessage = { id: string; sender: "self" | "opponent"; text: string; sentAt: number };
 type EmojiSender = "self" | "opponent";
+type RematchState = "outgoing" | "incoming" | null;
 type MatchInfo = {
   matchId: string;
   playerId: string;
@@ -138,7 +144,7 @@ function readableError(error: unknown) {
   return error instanceof Error ? error.message : "请求没有完成，请稍后重试。";
 }
 
-export default function Home() {
+function GomokuGame({ onBack }: { onBack: () => void }) {
   const [nickname, setNickname] = useState(() => (typeof window === "undefined" ? "" : window.localStorage.getItem("gomoku-nickname") ?? ""));
   const [mode, setMode] = useState<MatchMode>("quick");
   const [roomCode, setRoomCode] = useState("");
@@ -152,13 +158,15 @@ export default function Home() {
   const [message, setMessage] = useState("输入昵称，和下一位棋手来一盘。 ");
   const [isOnline, setIsOnline] = useState(false);
   const [undoPending, setUndoPending] = useState<"outgoing" | "incoming" | null>(null);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [unreadChat, setUnreadChat] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [opponentHover, setOpponentHover] = useState<number | null>(null);
   const [lastEmoji, setLastEmoji] = useState<{ emoji: string; sender: EmojiSender } | null>(null);
+  const [rematchPending, setRematchPending] = useState<RematchState>(null);
+  const [round, setRound] = useState(1);
 
   const playerIdRef = useRef("");
   const phaseRef = useRef<Phase>("idle");
@@ -173,6 +181,8 @@ export default function Home() {
   const stopSignalPollingRef = useRef(false);
   const matchPollingRef = useRef(false);
   const undoPendingRef = useRef<"outgoing" | "incoming" | null>(null);
+  const rematchPendingRef = useRef<RematchState>(null);
+  const chatOpenRef = useRef(true);
   const emojiTimerRef = useRef<number | null>(null);
   const startMatchingRef = useRef<(() => Promise<void>) | null>(null);
   const placeStoneRef = useRef<((index: number) => { ok: boolean; reason?: string }) | null>(null);
@@ -203,6 +213,10 @@ export default function Home() {
     matchRef.current = match;
   }, [match]);
 
+  useEffect(() => {
+    chatOpenRef.current = chatOpen;
+  }, [chatOpen]);
+
   const setPhase = useCallback((nextPhase: Phase) => {
     phaseRef.current = nextPhase;
     setPhaseState(nextPhase);
@@ -211,6 +225,11 @@ export default function Home() {
   const setUndoState = useCallback((nextState: "outgoing" | "incoming" | null) => {
     undoPendingRef.current = nextState;
     setUndoPending(nextState);
+  }, []);
+
+  const setRematchState = useCallback((nextState: RematchState) => {
+    rematchPendingRef.current = nextState;
+    setRematchPending(nextState);
   }, []);
 
   const showEmoji = useCallback((emoji: string, sender: EmojiSender) => {
@@ -222,7 +241,7 @@ export default function Home() {
     }, 1800);
   }, []);
 
-  const resetBoard = useCallback(() => {
+  const resetRound = useCallback(() => {
     const nextBoard = blankBoard();
     boardRef.current = nextBoard;
     moveHistoryRef.current = [];
@@ -233,14 +252,20 @@ export default function Home() {
     setTurn("black");
     setWinner(null);
     setUndoState(null);
-    setChatMessages([]);
-    setChatInput("");
-    setUnreadChat(0);
-    setChatOpen(false);
+    setRematchState(null);
     setEmojiOpen(false);
     setOpponentHover(null);
     setLastEmoji(null);
-  }, [setUndoState]);
+  }, [setRematchState, setUndoState]);
+
+  const resetBoard = useCallback(() => {
+    resetRound();
+    setChatMessages([]);
+    setChatInput("");
+    setUnreadChat(0);
+    setChatOpen(true);
+    setRound(1);
+  }, [resetRound]);
 
   const closeConnection = useCallback(() => {
     stopSignalPollingRef.current = true;
@@ -379,6 +404,42 @@ export default function Home() {
     [sendPeerMessage, setUndoState, undoLastMove],
   );
 
+  const startRematch = useCallback(() => {
+    const currentMatch = matchRef.current;
+    if (!currentMatch) return;
+    const nextMatch: MatchInfo = {
+      ...currentMatch,
+      color: currentMatch.color === "black" ? "white" : "black",
+    };
+    matchRef.current = nextMatch;
+    setMatch(nextMatch);
+    resetRound();
+    setRound((current) => current + 1);
+    setPhase("playing");
+    setMessage(nextMatch.color === "black" ? "新一局开始，你执黑先行。 " : "新一局开始，对手执黑先行。 ");
+  }, [resetRound, setPhase]);
+
+  const requestRematch = useCallback(() => {
+    if (!matchRef.current || !isOnline || phaseRef.current !== "finished" || rematchPendingRef.current) return;
+    setRematchState("outgoing");
+    setMessage("已邀请对手再来一局，等待对方确认… ");
+    sendPeerMessage({ type: "rematch-request" });
+  }, [isOnline, sendPeerMessage, setRematchState]);
+
+  const respondToRematch = useCallback(
+    (accepted: boolean) => {
+      if (rematchPendingRef.current !== "incoming") return;
+      sendPeerMessage({ type: "rematch-response", accepted });
+      if (accepted) {
+        startRematch();
+      } else {
+        setRematchState(null);
+        setMessage("已拒绝再来一局的邀请。 ");
+      }
+    },
+    [sendPeerMessage, setRematchState, startRematch],
+  );
+
   const attachChannel = useCallback(
     (channel: RTCDataChannel, matchId: string) => {
       channelRef.current = channel;
@@ -407,16 +468,17 @@ export default function Home() {
             setOpponentHover(typeof hoverIndex === "number" && Number.isInteger(hoverIndex) && hoverIndex >= 0 && hoverIndex < BOARD_CELLS ? hoverIndex : null);
           }
           if (payload.type === "chat" && typeof payload.text === "string") {
+            const incomingText = payload.text.slice(0, 120);
             setChatMessages((current) => [
               ...current,
               {
                 id: `opponent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 sender: "opponent",
-                text: payload.text.slice(0, 120),
+                text: incomingText,
                 sentAt: Date.now(),
               },
             ]);
-            setUnreadChat((current) => current + 1);
+            if (!chatOpenRef.current) setUnreadChat((current) => current + 1);
           }
           if (payload.type === "emoji" && typeof payload.emoji === "string" && QUICK_EMOJIS.includes(payload.emoji)) {
             showEmoji(payload.emoji, "opponent");
@@ -434,12 +496,29 @@ export default function Home() {
               setMessage("对方拒绝了悔棋请求。 ");
             }
           }
+          if (payload.type === "rematch-request" && phaseRef.current === "finished") {
+            if (rematchPendingRef.current === "outgoing") {
+              sendPeerMessage({ type: "rematch-response", accepted: true });
+              startRematch();
+            } else {
+              setRematchState("incoming");
+              setMessage(`${matchRef.current?.opponentName ?? "对手"} 邀请你再来一局。 `);
+            }
+          }
+          if (payload.type === "rematch-response" && rematchPendingRef.current === "outgoing") {
+            if (payload.accepted) {
+              startRematch();
+            } else {
+              setRematchState(null);
+              setMessage("对手暂时不想继续这一局。 ");
+            }
+          }
         } catch {
           setMessage("收到了一条无法识别的对局消息。 ");
         }
       };
       channel.onclose = () => {
-        if (matchRef.current?.matchId === matchId && phaseRef.current === "playing") {
+        if (matchRef.current?.matchId === matchId && (phaseRef.current === "playing" || phaseRef.current === "finished")) {
           setIsOnline(false);
           setPhase("error");
           setMessage("对手的连接已断开，可以重新匹配。 ");
@@ -453,7 +532,7 @@ export default function Home() {
         }
       };
     },
-    [applyMove, setPhase, setUndoState, showEmoji, undoLastMove],
+    [applyMove, sendPeerMessage, setPhase, setRematchState, setUndoState, showEmoji, startRematch, undoLastMove],
   );
 
   const sendSignal = useCallback(async (nextMatch: MatchInfo, type: "offer" | "answer", description: RTCSessionDescriptionInit) => {
@@ -816,15 +895,21 @@ export default function Home() {
   return (
     <main className="gomoku-shell">
       <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-          <div>
-            <p className="brand-name">棋逢对手</p>
-            <p className="brand-caption">P2P 五子棋</p>
+        <div className="topbar-left">
+          <button className="back-to-hub" type="button" onClick={onBack}>
+            <ArrowLeft size={16} />
+            游戏大厅
+          </button>
+          <div className="brand-lockup">
+            <div className="brand-mark" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div>
+              <p className="brand-name">五子棋</p>
+              <p className="brand-caption">P2P GAME ARCADE</p>
+            </div>
           </div>
         </div>
         <div className="topbar-note">
@@ -837,7 +922,7 @@ export default function Home() {
         <div className="board-column">
           <div className="eyebrow-row">
             <div>
-              <p className="eyebrow">ONLINE MATCH</p>
+              <p className="eyebrow">ONLINE MATCH · ROUND {round}</p>
               <h1>落一子，见真章。</h1>
             </div>
             <div className={`phase-pill phase-${phase}`}>
@@ -880,14 +965,13 @@ export default function Home() {
                 <small>{lastEmoji.sender === "self" ? "你" : opponentLabel}</small>
               </div>
             )}
-            {(phase === "idle" || phase === "matching" || phase === "room-waiting" || phase === "connecting" || phase === "error" || phase === "finished") && (
+            {(phase === "idle" || phase === "matching" || phase === "room-waiting" || phase === "connecting" || phase === "error") && (
               <div className={`board-overlay overlay-${phase}`}>
                 {phase === "idle" && <Sparkles size={20} />}
                 {phase === "matching" && <LoaderCircle className="spin" size={22} />}
                 {phase === "room-waiting" && <KeyRound className="pulse" size={21} />}
                 {phase === "connecting" && <Radio className="pulse" size={22} />}
                 {phase === "error" && <CircleHelp size={21} />}
-                {phase === "finished" && <Swords size={21} />}
                 <strong>{shownStatus}</strong>
                 <span>
                   {phase === "idle"
@@ -900,13 +984,37 @@ export default function Home() {
                           ? "双方建立直连后，黑方先行。"
                           : phase === "error"
                             ? "换个网络或重新匹配试试。"
-                            : phase === "finished"
-                              ? winner === "draw" ? "势均力敌。" : winner === match?.color ? "这盘赢得漂亮。" : "下一盘扳回来。"
-                              : ""}
+                            : ""}
                 </span>
               </div>
             )}
           </div>
+
+          {phase === "finished" && match && (
+            <section className={`round-result ${winner === "draw" ? "result-draw" : winner === match.color ? "result-win" : "result-loss"}`} aria-live="polite">
+              <div className="round-result-copy">
+                <span className="result-icon"><Swords size={19} /></span>
+                <div>
+                  <p>第 {round} 局结束</p>
+                  <h2>{shownStatus}</h2>
+                  <span>{winner === "draw" ? "势均力敌，换手再试一次。" : winner === match.color ? "棋盘保留着，随时可以和同一位对手继续。" : "不离开房间，下一局直接扳回来。"}</span>
+                </div>
+              </div>
+              <div className="round-result-actions">
+                {rematchPending === "incoming" ? (
+                  <>
+                    <button className="result-secondary" type="button" onClick={() => respondToRematch(false)}>稍后</button>
+                    <button className="result-primary" type="button" onClick={() => respondToRematch(true)}>接受再来一局</button>
+                  </>
+                ) : (
+                  <button className="result-primary" type="button" disabled={!isOnline || rematchPending === "outgoing"} onClick={requestRematch}>
+                    <RotateCcw size={16} />
+                    {rematchPending === "outgoing" ? "等待对手确认" : "和同一位对手再来一局"}
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
 
           <div className="board-footer">
             <span>15 × 15 标准棋盘</span>
@@ -917,6 +1025,7 @@ export default function Home() {
           </div>
         </div>
 
+        <div className="game-sidebar">
         <aside className="control-panel">
           <div className="panel-heading">
             <div>
@@ -932,7 +1041,7 @@ export default function Home() {
               type="button"
               role="tab"
               aria-selected={mode === "quick"}
-              disabled={isBusy || phase === "playing"}
+              disabled={isBusy || phase === "playing" || phase === "finished"}
               onClick={() => setMode("quick")}
             >
               随机匹配
@@ -942,7 +1051,7 @@ export default function Home() {
               type="button"
               role="tab"
               aria-selected={mode === "room"}
-              disabled={isBusy || phase === "playing"}
+              disabled={isBusy || phase === "playing" || phase === "finished"}
               onClick={() => setMode("room")}
             >
               房间对战
@@ -958,15 +1067,15 @@ export default function Home() {
                   value={roomCode}
                   maxLength={8}
                   placeholder="输入 4–8 位房间号"
-                  disabled={isBusy || phase === "playing"}
+                  disabled={isBusy || phase === "playing" || phase === "finished"}
                   onChange={(event) => setRoomCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
                 />
               </label>
               <div className="room-actions">
-                <button className="room-action room-create" type="button" disabled={isBusy || phase === "playing"} onClick={createRoom}>
+                <button className="room-action room-create" type="button" disabled={isBusy || phase === "playing" || phase === "finished"} onClick={createRoom}>
                   <KeyRound size={16} /> 创建房间
                 </button>
-                <button className="room-action room-join" type="button" disabled={isBusy || phase === "playing" || roomCode.trim().length < 4} onClick={joinRoom}>
+                <button className="room-action room-join" type="button" disabled={isBusy || phase === "playing" || phase === "finished" || roomCode.trim().length < 4} onClick={joinRoom}>
                   <Users size={16} /> 加入房间
                 </button>
               </div>
@@ -993,7 +1102,7 @@ export default function Home() {
                 value={nickname}
                 maxLength={18}
                 placeholder="比如：长安"
-                disabled={isBusy || phase === "playing"}
+                disabled={isBusy || phase === "playing" || phase === "finished"}
                 onChange={(event) => setNickname(event.target.value)}
               />
             </div>
@@ -1029,10 +1138,10 @@ export default function Home() {
             </span>
           </div>
 
-          {mode === "quick" && (
+          {mode === "quick" && phase !== "finished" && (
             <button className="primary-button" type="button" disabled={isBusy || phase === "playing"} onClick={startMatching}>
-              {phase === "finished" || phase === "error" ? <RotateCcw size={18} /> : <Swords size={18} />}
-              {phase === "finished" || phase === "error" ? "再来一局" : "开始匹配"}
+              {phase === "error" ? <RotateCcw size={18} /> : <Swords size={18} />}
+              {phase === "error" ? "重新匹配" : "开始匹配"}
             </button>
           )}
           {isBusy && (
@@ -1040,9 +1149,9 @@ export default function Home() {
               {phase === "room-waiting" ? "关闭房间" : "取消匹配"}
             </button>
           )}
-          {phase === "playing" && (
+          {(phase === "playing" || phase === "finished") && (
             <button className="secondary-button" type="button" onClick={cancelMatching}>
-              <LogOut size={16} /> 离开棋局
+              <LogOut size={16} /> 离开当前房间
             </button>
           )}
 
@@ -1066,78 +1175,6 @@ export default function Home() {
             </div>
           )}
 
-          <div className={`chat-dock ${chatOpen ? "chat-open" : ""}`}>
-            <button
-              className="chat-toggle"
-              type="button"
-              aria-expanded={chatOpen}
-              aria-controls="gomoku-chat-panel"
-              onClick={() => {
-                setChatOpen((open) => !open);
-                setUnreadChat(0);
-              }}
-            >
-              <MessageCircle size={16} />
-              <span>对局聊天</span>
-              {unreadChat > 0 && <b className="chat-unread">{unreadChat > 9 ? "9+" : unreadChat}</b>}
-              {chatOpen ? <X size={15} /> : <span className="chat-toggle-hint">小窗</span>}
-            </button>
-
-            {chatOpen && (
-              <div className="chat-panel" id="gomoku-chat-panel">
-                <div className="chat-panel-heading">
-                  <div>
-                    <strong>说两句</strong>
-                    <span>{isOnline ? "消息通过直连发送" : "匹配成功后可聊天"}</span>
-                  </div>
-                  <span className={`chat-status ${isOnline ? "online" : ""}`}><i />{isOnline ? "已直连" : "未连接"}</span>
-                </div>
-
-                <div className="chat-messages" aria-live="polite">
-                  {chatMessages.length === 0 ? (
-                    <p className="chat-empty">还没有消息，先给对手一个表情吧。</p>
-                  ) : (
-                    chatMessages.map((chatMessage) => (
-                      <div className={`chat-message ${chatMessage.sender === "self" ? "from-self" : "from-opponent"}`} key={chatMessage.id}>
-                        <span>{chatMessage.text}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="emoji-toolbar">
-                  <button className={`emoji-toggle ${emojiOpen ? "active" : ""}`} type="button" onClick={() => setEmojiOpen((open) => !open)}>
-                    <SmilePlus size={15} /> 表情
-                  </button>
-                  {emojiOpen && (
-                    <div className="emoji-picker" aria-label="快捷表情">
-                      {QUICK_EMOJIS.map((emoji) => (
-                        <button type="button" key={emoji} aria-label={`发送${emoji}`} onClick={() => sendEmoji(emoji)}>{emoji}</button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <form
-                  className="chat-compose"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    sendChat();
-                  }}
-                >
-                  <input
-                    aria-label="聊天消息"
-                    value={chatInput}
-                    maxLength={120}
-                    placeholder={isOnline ? "输入一句话…" : "等待直连"}
-                    onChange={(event) => setChatInput(event.target.value)}
-                  />
-                  <button type="submit" aria-label="发送消息" disabled={!isOnline || !chatInput.trim()}><Send size={15} /></button>
-                </form>
-              </div>
-            )}
-          </div>
-
           <p className="status-message" aria-live="polite">{message}</p>
 
           <div className="trust-note">
@@ -1146,6 +1183,89 @@ export default function Home() {
           </div>
           <p className="tip-note"><span>TIP</span> 黑方先手；点击棋盘交叉点落子。</p>
         </aside>
+
+        <section className={`chat-dock independent-chat ${chatOpen ? "chat-open" : ""}`} aria-label="对局聊天">
+          <div className="chat-card-heading">
+            <div className="chat-title-group">
+              <span className="chat-title-icon"><MessageCircle size={17} /></span>
+              <div>
+                <strong>对局聊天</strong>
+                <span>{isOnline ? `正在和 ${opponentLabel} 直连聊天` : "匹配成功后即可发送消息"}</span>
+              </div>
+            </div>
+            <div className="chat-heading-actions">
+              <span className={`chat-status ${isOnline ? "online" : ""}`}><i />{isOnline ? "在线" : "离线"}</span>
+              {unreadChat > 0 && <b className="chat-unread">{unreadChat > 9 ? "9+" : unreadChat}</b>}
+              <button
+                className="chat-collapse"
+                type="button"
+                aria-label={chatOpen ? "收起聊天" : "展开聊天"}
+                aria-expanded={chatOpen}
+                aria-controls="gomoku-chat-panel"
+                onClick={() => {
+                  const nextOpen = !chatOpen;
+                  chatOpenRef.current = nextOpen;
+                  setChatOpen(nextOpen);
+                  if (nextOpen) setUnreadChat(0);
+                }}
+              >
+                {chatOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
+              </button>
+            </div>
+          </div>
+
+          {chatOpen && (
+            <div className="chat-panel" id="gomoku-chat-panel">
+              <div className="chat-messages" aria-live="polite">
+                {chatMessages.length === 0 ? (
+                  <div className="chat-empty">
+                    <MessageCircle size={20} />
+                    <p>{isOnline ? "已经连上了，先和对手打个招呼吧。" : "对局建立后，消息和表情都会通过 P2P 发送。"}</p>
+                  </div>
+                ) : (
+                  chatMessages.map((chatMessage) => (
+                    <div className={`chat-message ${chatMessage.sender === "self" ? "from-self" : "from-opponent"}`} key={chatMessage.id}>
+                      <small>{chatMessage.sender === "self" ? "你" : opponentLabel}</small>
+                      <span>{chatMessage.text}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="emoji-toolbar">
+                <button className={`emoji-toggle ${emojiOpen ? "active" : ""}`} type="button" disabled={!isOnline} onClick={() => setEmojiOpen((open) => !open)}>
+                  <SmilePlus size={15} /> 快捷表情
+                </button>
+                {emojiOpen && (
+                  <div className="emoji-picker" aria-label="快捷表情">
+                    {QUICK_EMOJIS.map((emoji) => (
+                      <button type="button" key={emoji} aria-label={`发送${emoji}`} onClick={() => sendEmoji(emoji)}>{emoji}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <form
+                className="chat-compose"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  sendChat();
+                }}
+              >
+                <input
+                  aria-label="聊天消息"
+                  value={chatInput}
+                  maxLength={120}
+                  disabled={!isOnline}
+                  placeholder={isOnline ? "输入消息，按回车发送" : "等待建立 P2P 连接"}
+                  onChange={(event) => setChatInput(event.target.value)}
+                />
+                <button type="submit" aria-label="发送消息" disabled={!isOnline || !chatInput.trim()}><Send size={16} /></button>
+              </form>
+            </div>
+          )}
+        </section>
+        </div>
       </section>
 
       <footer className="page-footer">
@@ -1154,4 +1274,138 @@ export default function Home() {
       </footer>
     </main>
   );
+}
+
+const GAME_CATALOG = [
+  {
+    id: "gomoku" as const,
+    name: "五子棋",
+    description: "15 × 15 标准棋盘，支持随机匹配、房间对战和连续再战。",
+    players: "2 人",
+    status: "可游玩",
+    available: true,
+  },
+  {
+    id: "reversi",
+    name: "黑白棋",
+    description: "共享同一套 P2P 匹配与房间能力。",
+    players: "2 人",
+    status: "即将加入",
+    available: false,
+  },
+  {
+    id: "tic-tac-toe",
+    name: "井字棋",
+    description: "更轻量的好友房间小游戏。",
+    players: "2 人",
+    status: "即将加入",
+    available: false,
+  },
+];
+
+function GameHub({ onSelect }: { onSelect: (game: GameId) => void }) {
+  return (
+    <main className="arcade-shell">
+      <header className="topbar hub-topbar">
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div>
+            <p className="brand-name">P2P 游戏游廊</p>
+            <p className="brand-caption">MINI GAME ARCADE</p>
+          </div>
+        </div>
+        <div className="topbar-note">
+          <span className="live-dot" />
+          <span>打开即玩，无需注册</span>
+        </div>
+      </header>
+
+      <section className="hub-hero">
+        <div className="hub-hero-copy">
+          <p className="eyebrow">CHOOSE A GAME</p>
+          <h1>找个人，开一局。</h1>
+          <p>每个小游戏共用 P2P 匹配、好友房间和直连通信能力。选中游戏后，再决定随机匹配或邀请朋友。</p>
+        </div>
+        <div className="hub-summary" aria-label="游戏平台信息">
+          <div><strong>1</strong><span>款可游玩</span></div>
+          <div><strong>P2P</strong><span>对局直连</span></div>
+          <div><strong>0</strong><span>注册步骤</span></div>
+        </div>
+      </section>
+
+      <section className="game-catalog" aria-label="小游戏列表">
+        {GAME_CATALOG.map((game) => game.available ? (
+          <button className="game-card game-card-available" type="button" key={game.id} onClick={() => onSelect("gomoku")}>
+            <div className="game-card-visual gomoku-card-visual" aria-hidden="true">
+              <div className="gomoku-mini-board">
+                <span className="mini-stone mini-black stone-one" />
+                <span className="mini-stone mini-white stone-two" />
+                <span className="mini-stone mini-black stone-three" />
+                <span className="mini-stone mini-white stone-four" />
+                <span className="mini-stone mini-black stone-five" />
+              </div>
+              <span className="available-badge"><span />在线</span>
+            </div>
+            <div className="game-card-content">
+              <div className="game-card-title">
+                <span className="game-icon"><Grid3X3 size={20} /></span>
+                <div><strong>{game.name}</strong><span>{game.status}</span></div>
+              </div>
+              <p>{game.description}</p>
+              <div className="game-card-meta"><span>{game.players}</span><span>进入游戏 <span aria-hidden="true">→</span></span></div>
+            </div>
+          </button>
+        ) : (
+          <article className="game-card game-card-coming" key={game.id}>
+            <div className="game-card-visual coming-card-visual" aria-hidden="true"><Gamepad2 size={34} /></div>
+            <div className="game-card-content">
+              <div className="game-card-title">
+                <span className="game-icon"><Gamepad2 size={20} /></span>
+                <div><strong>{game.name}</strong><span>{game.status}</span></div>
+              </div>
+              <p>{game.description}</p>
+              <div className="game-card-meta"><span>{game.players}</span><span>开发中</span></div>
+            </div>
+          </article>
+        ))}
+      </section>
+
+      <section className="hub-extension-note">
+        <Gamepad2 size={20} />
+        <div><strong>统一游戏外壳</strong><span>后续新增游戏只需要接入游戏组件，房间、通信和聊天体验可以继续复用。</span></div>
+      </section>
+
+      <footer className="page-footer hub-footer">
+        <span>小游戏逐步加入中。</span>
+        <span><span className="footer-key">P2P</span> · 房间对战 · 跨端可玩</span>
+      </footer>
+    </main>
+  );
+}
+
+export default function Home() {
+  const [selectedGame, setSelectedGame] = useState<GameId | null>(null);
+
+  useEffect(() => {
+    const syncRoute = () => setSelectedGame(window.location.hash === "#gomoku" ? "gomoku" : null);
+    syncRoute();
+    window.addEventListener("hashchange", syncRoute);
+    return () => window.removeEventListener("hashchange", syncRoute);
+  }, []);
+
+  const openGame = useCallback((game: GameId) => {
+    window.location.hash = game;
+    setSelectedGame(game);
+  }, []);
+
+  const backToHub = useCallback(() => {
+    window.history.pushState(null, "", `${window.location.pathname}${window.location.search}`);
+    setSelectedGame(null);
+  }, []);
+
+  return selectedGame === "gomoku" ? <GomokuGame onBack={backToHub} /> : <GameHub onSelect={openGame} />;
 }
