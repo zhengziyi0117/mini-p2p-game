@@ -8,13 +8,17 @@ import {
   KeyRound,
   LoaderCircle,
   LogOut,
+  MessageCircle,
   Radio,
   RotateCcw,
+  Send,
   ShieldCheck,
   Sparkles,
   Swords,
+  SmilePlus,
   Undo2,
   Users,
+  X,
 } from "lucide-react";
 
 type Color = "black" | "white";
@@ -22,6 +26,8 @@ type Cell = Color | null;
 type Phase = "idle" | "matching" | "room-waiting" | "connecting" | "playing" | "finished" | "error";
 type MatchMode = "quick" | "room";
 type MoveRecord = { index: number; color: Color };
+type ChatMessage = { id: string; sender: "self" | "opponent"; text: string; sentAt: number };
+type EmojiSender = "self" | "opponent";
 type MatchInfo = {
   matchId: string;
   playerId: string;
@@ -33,6 +39,7 @@ type MatchInfo = {
 
 const BOARD_SIZE = 15;
 const BOARD_CELLS = BOARD_SIZE * BOARD_SIZE;
+const QUICK_EMOJIS = ["👏", "😂", "😮", "👍", "🤔", "🔥", "🎉", "🙏"];
 const STUN_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" },
@@ -145,6 +152,13 @@ export default function Home() {
   const [message, setMessage] = useState("输入昵称，和下一位棋手来一盘。 ");
   const [isOnline, setIsOnline] = useState(false);
   const [undoPending, setUndoPending] = useState<"outgoing" | "incoming" | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [unreadChat, setUnreadChat] = useState(0);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [opponentHover, setOpponentHover] = useState<number | null>(null);
+  const [lastEmoji, setLastEmoji] = useState<{ emoji: string; sender: EmojiSender } | null>(null);
 
   const playerIdRef = useRef("");
   const phaseRef = useRef<Phase>("idle");
@@ -159,6 +173,7 @@ export default function Home() {
   const stopSignalPollingRef = useRef(false);
   const matchPollingRef = useRef(false);
   const undoPendingRef = useRef<"outgoing" | "incoming" | null>(null);
+  const emojiTimerRef = useRef<number | null>(null);
   const startMatchingRef = useRef<(() => Promise<void>) | null>(null);
   const placeStoneRef = useRef<((index: number) => { ok: boolean; reason?: string }) | null>(null);
 
@@ -198,6 +213,15 @@ export default function Home() {
     setUndoPending(nextState);
   }, []);
 
+  const showEmoji = useCallback((emoji: string, sender: EmojiSender) => {
+    setLastEmoji({ emoji, sender });
+    if (emojiTimerRef.current) window.clearTimeout(emojiTimerRef.current);
+    emojiTimerRef.current = window.setTimeout(() => {
+      setLastEmoji(null);
+      emojiTimerRef.current = null;
+    }, 1800);
+  }, []);
+
   const resetBoard = useCallback(() => {
     const nextBoard = blankBoard();
     boardRef.current = nextBoard;
@@ -209,6 +233,13 @@ export default function Home() {
     setTurn("black");
     setWinner(null);
     setUndoState(null);
+    setChatMessages([]);
+    setChatInput("");
+    setUnreadChat(0);
+    setChatOpen(false);
+    setEmojiOpen(false);
+    setOpponentHover(null);
+    setLastEmoji(null);
   }, [setUndoState]);
 
   const closeConnection = useCallback(() => {
@@ -218,12 +249,49 @@ export default function Home() {
     peerRef.current?.close();
     channelRef.current = null;
     peerRef.current = null;
+    setOpponentHover(null);
   }, []);
 
   const sendPeerMessage = useCallback((payload: Record<string, unknown>) => {
     const channel = channelRef.current;
     if (channel?.readyState === "open") channel.send(JSON.stringify(payload));
   }, []);
+
+  const sendHover = useCallback(
+    (index: number | null) => {
+      if (!matchRef.current || !isOnline || phaseRef.current !== "playing") return;
+      sendPeerMessage({ type: "hover", index });
+    },
+    [isOnline, sendPeerMessage],
+  );
+
+  const sendChat = useCallback(() => {
+    const text = chatInput.trim().replace(/\s+/g, " ").slice(0, 120);
+    if (!text) return;
+    if (!matchRef.current || !isOnline) {
+      setMessage("建立直连后才能聊天。 ");
+      return;
+    }
+    setChatMessages((current) => [
+      ...current,
+      { id: `self-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, sender: "self", text, sentAt: Date.now() },
+    ]);
+    setChatInput("");
+    sendPeerMessage({ type: "chat", text });
+  }, [chatInput, isOnline, sendPeerMessage]);
+
+  const sendEmoji = useCallback(
+    (emoji: string) => {
+      if (!matchRef.current || !isOnline) {
+        setMessage("建立直连后才能发送表情。 ");
+        return;
+      }
+      showEmoji(emoji, "self");
+      sendPeerMessage({ type: "emoji", emoji });
+      setEmojiOpen(false);
+    },
+    [isOnline, sendPeerMessage, showEmoji],
+  );
 
   const applyMove = useCallback(
     (index: number, color: Color, send: boolean) => {
@@ -325,12 +393,33 @@ export default function Home() {
         try {
           const payload = JSON.parse(String(event.data)) as {
             type?: string;
-            index?: number;
+            index?: number | null;
             color?: Color;
             accepted?: boolean;
+            text?: string;
+            emoji?: string;
           };
           if (payload.type === "move" && (payload.color === "black" || payload.color === "white")) {
             applyMove(Number(payload.index), payload.color, false);
+          }
+          if (payload.type === "hover") {
+            const hoverIndex = payload.index;
+            setOpponentHover(typeof hoverIndex === "number" && Number.isInteger(hoverIndex) && hoverIndex >= 0 && hoverIndex < BOARD_CELLS ? hoverIndex : null);
+          }
+          if (payload.type === "chat" && typeof payload.text === "string") {
+            setChatMessages((current) => [
+              ...current,
+              {
+                id: `opponent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                sender: "opponent",
+                text: payload.text.slice(0, 120),
+                sentAt: Date.now(),
+              },
+            ]);
+            setUnreadChat((current) => current + 1);
+          }
+          if (payload.type === "emoji" && typeof payload.emoji === "string" && QUICK_EMOJIS.includes(payload.emoji)) {
+            showEmoji(payload.emoji, "opponent");
           }
           if (payload.type === "undo-request") {
             setUndoState("incoming");
@@ -364,7 +453,7 @@ export default function Home() {
         }
       };
     },
-    [applyMove, setPhase, setUndoState, undoLastMove],
+    [applyMove, setPhase, setUndoState, showEmoji, undoLastMove],
   );
 
   const sendSignal = useCallback(async (nextMatch: MatchInfo, type: "offer" | "answer", description: RTCSessionDescriptionInit) => {
@@ -760,21 +849,37 @@ export default function Home() {
           <div className="board-stage">
             <div className="board-rim">
               <div className="board-grid" role="grid" aria-label="五子棋棋盘">
-                {board.map((cell, index) => (
-                  <button
-                    className={`board-cell ${cell ? `stone-${cell}` : ""} ${myTurn && !cell ? "cell-available" : ""}`}
-                    key={index}
-                    type="button"
-                    role="gridcell"
-                    aria-label={`${Math.floor(index / BOARD_SIZE) + 1} 行，第${(index % BOARD_SIZE) + 1} 列${cell ? `，${cell === "black" ? "黑子" : "白子"}` : "，空位"}`}
-                    disabled={!myTurn || Boolean(cell) || Boolean(winner)}
-                    onClick={() => placeStone(index)}
-                  >
-                    <span className="stone" aria-hidden="true" />
-                  </button>
-                ))}
+                <div className="board-lines" aria-hidden="true" />
+                <div className="board-cells">
+                  {board.map((cell, index) => {
+                    const row = Math.floor(index / BOARD_SIZE);
+                    const column = index % BOARD_SIZE;
+                    return (
+                      <button
+                        className={`board-cell ${cell ? `stone-${cell}` : ""} ${myTurn && !cell ? "cell-available" : ""} ${opponentHover === index && phase === "playing" ? "opponent-hover" : ""}`}
+                        key={index}
+                        type="button"
+                        role="gridcell"
+                        aria-label={`${row + 1} 行，第${column + 1} 列${cell ? `，${cell === "black" ? "黑子" : "白子"}` : "，空位"}`}
+                        disabled={!myTurn || Boolean(cell) || Boolean(winner)}
+                        style={{ left: `${(column / (BOARD_SIZE - 1)) * 100}%`, top: `${(row / (BOARD_SIZE - 1)) * 100}%` }}
+                        onMouseEnter={() => sendHover(index)}
+                        onMouseLeave={() => sendHover(null)}
+                        onClick={() => placeStone(index)}
+                      >
+                        <span className="stone" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
+            {lastEmoji && (
+              <div className={`emoji-burst emoji-${lastEmoji.sender}`} aria-live="polite">
+                <span>{lastEmoji.emoji}</span>
+                <small>{lastEmoji.sender === "self" ? "你" : opponentLabel}</small>
+              </div>
+            )}
             {(phase === "idle" || phase === "matching" || phase === "room-waiting" || phase === "connecting" || phase === "error" || phase === "finished") && (
               <div className={`board-overlay overlay-${phase}`}>
                 {phase === "idle" && <Sparkles size={20} />}
@@ -960,6 +1065,78 @@ export default function Home() {
               <span className="undo-hint">{moveHistory.length ? "悔棋需要对手确认" : "落子后可以请求悔棋"}</span>
             </div>
           )}
+
+          <div className={`chat-dock ${chatOpen ? "chat-open" : ""}`}>
+            <button
+              className="chat-toggle"
+              type="button"
+              aria-expanded={chatOpen}
+              aria-controls="gomoku-chat-panel"
+              onClick={() => {
+                setChatOpen((open) => !open);
+                setUnreadChat(0);
+              }}
+            >
+              <MessageCircle size={16} />
+              <span>对局聊天</span>
+              {unreadChat > 0 && <b className="chat-unread">{unreadChat > 9 ? "9+" : unreadChat}</b>}
+              {chatOpen ? <X size={15} /> : <span className="chat-toggle-hint">小窗</span>}
+            </button>
+
+            {chatOpen && (
+              <div className="chat-panel" id="gomoku-chat-panel">
+                <div className="chat-panel-heading">
+                  <div>
+                    <strong>说两句</strong>
+                    <span>{isOnline ? "消息通过直连发送" : "匹配成功后可聊天"}</span>
+                  </div>
+                  <span className={`chat-status ${isOnline ? "online" : ""}`}><i />{isOnline ? "已直连" : "未连接"}</span>
+                </div>
+
+                <div className="chat-messages" aria-live="polite">
+                  {chatMessages.length === 0 ? (
+                    <p className="chat-empty">还没有消息，先给对手一个表情吧。</p>
+                  ) : (
+                    chatMessages.map((chatMessage) => (
+                      <div className={`chat-message ${chatMessage.sender === "self" ? "from-self" : "from-opponent"}`} key={chatMessage.id}>
+                        <span>{chatMessage.text}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="emoji-toolbar">
+                  <button className={`emoji-toggle ${emojiOpen ? "active" : ""}`} type="button" onClick={() => setEmojiOpen((open) => !open)}>
+                    <SmilePlus size={15} /> 表情
+                  </button>
+                  {emojiOpen && (
+                    <div className="emoji-picker" aria-label="快捷表情">
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button type="button" key={emoji} aria-label={`发送${emoji}`} onClick={() => sendEmoji(emoji)}>{emoji}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <form
+                  className="chat-compose"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    sendChat();
+                  }}
+                >
+                  <input
+                    aria-label="聊天消息"
+                    value={chatInput}
+                    maxLength={120}
+                    placeholder={isOnline ? "输入一句话…" : "等待直连"}
+                    onChange={(event) => setChatInput(event.target.value)}
+                  />
+                  <button type="submit" aria-label="发送消息" disabled={!isOnline || !chatInput.trim()}><Send size={15} /></button>
+                </form>
+              </div>
+            )}
+          </div>
 
           <p className="status-message" aria-live="polite">{message}</p>
 
