@@ -92,6 +92,7 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const stateChannelRef = useRef<RTCDataChannel | null>(null);
+  const inputChannelRef = useRef<RTCDataChannel | null>(null);
   const signalCursorRef = useRef(0);
   const stopSignalPollingRef = useRef(false);
   const matchPollingRef = useRef(false);
@@ -117,20 +118,28 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     stopSignalPollingRef.current = true;
     channelRef.current?.close();
     stateChannelRef.current?.close();
+    inputChannelRef.current?.close();
     peerRef.current?.close();
     channelRef.current = null;
     stateChannelRef.current = null;
+    inputChannelRef.current = null;
     peerRef.current = null;
     setIsOnline(false);
   }, []);
 
   const send = useCallback((payload: PeerMessage) => {
     const isStateSnapshot = payload.type?.endsWith("-state") === true;
-    const channel = isStateSnapshot ? stateChannelRef.current : channelRef.current;
+    const isRealtimeInput = payload.type?.endsWith("-input") === true;
+    const channel = isStateSnapshot
+      ? stateChannelRef.current
+      : isRealtimeInput
+        ? inputChannelRef.current
+        : channelRef.current;
     if (channel?.readyState !== "open") return false;
-    // State snapshots are disposable. Never let an old snapshot queue up
-    // behind a slow connection and make the guest watch the past.
-    if (isStateSnapshot && channel.bufferedAmount > 96 * 1024) return false;
+    // Realtime packets are disposable. Never queue stale snapshots or inputs
+    // behind congestion and make either player react to the past.
+    const bufferLimit = isStateSnapshot ? 96 * 1024 : 8 * 1024;
+    if ((isStateSnapshot || isRealtimeInput) && channel.bufferedAmount > bufferLimit) return false;
     channel.send(JSON.stringify({ gameId, ...payload }));
     return true;
   }, [gameId]);
@@ -166,11 +175,14 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
 
   const attachChannel = useCallback((channel: RTCDataChannel, nextMatch: P2PMatch) => {
     const isStateChannel = channel.label === `${gameId}-state`;
+    const isInputChannel = channel.label === `${gameId}-input`;
+    const isRealtimeChannel = isStateChannel || isInputChannel;
     if (isStateChannel) stateChannelRef.current = channel;
+    else if (isInputChannel) inputChannelRef.current = channel;
     else channelRef.current = channel;
 
     channel.onopen = () => {
-      if (matchRef.current?.matchId !== nextMatch.matchId || isStateChannel) return;
+      if (matchRef.current?.matchId !== nextMatch.matchId || isRealtimeChannel) return;
       setIsOnline(true);
       setPhase("playing");
       setMessage("直连已建立，可以开始玩了。 ");
@@ -187,7 +199,7 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     };
     channel.onclose = () => {
       if (matchRef.current?.matchId !== nextMatch.matchId) return;
-      if (isStateChannel) return;
+      if (isRealtimeChannel) return;
       setIsOnline(false);
       if (phaseRef.current === "playing" || phaseRef.current === "connecting") {
         setPhase("error");
@@ -197,7 +209,7 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     };
     channel.onerror = () => {
       if (matchRef.current?.matchId !== nextMatch.matchId) return;
-      if (isStateChannel) return;
+      if (isRealtimeChannel) return;
       setIsOnline(false);
       setPhase("error");
       setMessage("P2P 连接失败，可能是当前网络限制了直连。 ");
@@ -228,6 +240,7 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     if (nextMatch.color === "black") {
       attachChannel(peer.createDataChannel(gameId), nextMatch);
       attachChannel(peer.createDataChannel(`${gameId}-state`, { ordered: false, maxRetransmits: 0 }), nextMatch);
+      attachChannel(peer.createDataChannel(`${gameId}-input`, { ordered: false, maxRetransmits: 0 }), nextMatch);
     } else {
       peer.ondatachannel = (event) => attachChannel(event.channel, nextMatch);
     }
@@ -419,9 +432,11 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
       stopSignalPollingRef.current = true;
       channelRef.current?.close();
       stateChannelRef.current?.close();
+      inputChannelRef.current?.close();
       peerRef.current?.close();
       channelRef.current = null;
       stateChannelRef.current = null;
+      inputChannelRef.current = null;
       peerRef.current = null;
     };
   }, []);

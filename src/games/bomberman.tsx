@@ -69,6 +69,7 @@ type BomberState = {
   players: Record<PlayerColor, PlayerState>;
 };
 type ChatMessage = { id: string; sender: "self" | "opponent"; text: string };
+type GuestPrediction = { x: number; y: number; nextMoveAt: number; lastInputAt: number };
 
 const EMPTY_INPUT: InputState = { up: false, down: false, left: false, right: false, placeBomb: false };
 const POWERUP_GLYPHS: Record<PowerupKind, string> = { bomb: "💣", flame: "🔥", speed: "⚡", shield: "🛡️" };
@@ -322,12 +323,19 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [lastEmoji, setLastEmoji] = useState<{ emoji: string; sender: "self" | "opponent" } | null>(null);
   const [rematchPending, setRematchPending] = useState<"outgoing" | "incoming" | null>(null);
+  const [guestPosition, setGuestPosition] = useState<{ x: number; y: number } | null>(null);
 
   const stateRef = useRef(state);
   const roundRef = useRef(round);
   const isHostRef = useRef(false);
+  const guestColorRef = useRef<PlayerColor | null>(null);
   const localInputRef = useRef<InputState>({ ...EMPTY_INPUT });
   const remoteInputRef = useRef<InputState>({ ...EMPTY_INPUT });
+  const inputSequenceRef = useRef(0);
+  const remoteInputSequenceRef = useRef(0);
+  const remoteInputReceivedAtRef = useRef(0);
+  const remoteBombQueuedRef = useRef(false);
+  const guestPredictionRef = useRef<GuestPrediction | null>(null);
   const sendRef = useRef<(message: PeerMessage) => boolean>(() => false);
   const setP2PMessageRef = useRef<(message: string) => void>(() => undefined);
   const startNewRoundRef = useRef<() => void>(() => undefined);
@@ -360,19 +368,57 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     setState(stateRef.current);
     localInputRef.current = { ...EMPTY_INPUT };
     remoteInputRef.current = { ...EMPTY_INPUT };
+    inputSequenceRef.current = 0;
+    remoteInputSequenceRef.current = 0;
+    remoteInputReceivedAtRef.current = 0;
+    remoteBombQueuedRef.current = false;
+    guestPredictionRef.current = null;
+    setGuestPosition(null);
     setRematchPending(null);
+  }, []);
+
+  const setPrediction = useCallback((prediction: GuestPrediction | null) => {
+    guestPredictionRef.current = prediction;
+    setGuestPosition(prediction ? { x: prediction.x, y: prediction.y } : null);
   }, []);
 
   const handlePeerMessage = useCallback((message: PeerMessage) => {
     if (message.roundId !== undefined && message.roundId < roundRef.current) return;
     if (message.type === "bomberman-input" && isHostRef.current) {
       const payload = message.payload as { input?: unknown } | undefined;
+      const sequence = typeof message.seq === "number" ? message.seq : remoteInputSequenceRef.current + 1;
+      if (!Number.isSafeInteger(sequence) || sequence <= remoteInputSequenceRef.current) return;
+      remoteInputSequenceRef.current = sequence;
+      remoteInputReceivedAtRef.current = Date.now();
       remoteInputRef.current = normalizeInput(payload?.input);
+      return;
+    }
+    if (message.type === "bomberman-bomb" && isHostRef.current) {
+      remoteBombQueuedRef.current = true;
       return;
     }
     if (message.type === "bomberman-state" && !isHostRef.current) {
       const payload = message.payload;
       if (!isBomberState(payload) || payload.roundId !== roundRef.current) return;
+      const current = stateRef.current;
+      if (payload.tick < current.tick || (payload.tick === current.tick && payload.status === current.status)) return;
+      const guestColor = guestColorRef.current;
+      if (guestColor) {
+        const serverPlayer = payload.players[guestColor];
+        const prediction = guestPredictionRef.current;
+        if (!serverPlayer.alive || payload.status !== "playing") {
+          setPrediction(null);
+        } else if (!prediction) {
+          setPrediction({ x: serverPlayer.x, y: serverPlayer.y, nextMoveAt: 0, lastInputAt: Date.now() });
+        } else {
+          const distance = Math.abs(prediction.x - serverPlayer.x) + Math.abs(prediction.y - serverPlayer.y);
+          const isMoving = directionForInput(localInputRef.current) !== null;
+          const releaseHasSettled = !isMoving && Date.now() - prediction.lastInputAt > 160;
+          if (distance === 0 || distance > 3 || releaseHasSettled) {
+            setPrediction({ ...prediction, x: serverPlayer.x, y: serverPlayer.y });
+          }
+        }
+      }
       stateRef.current = payload;
       setState(payload);
       return;
@@ -404,7 +450,7 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
         setP2PMessageRef.current("对手暂时不想继续这一局。 ");
       }
     }
-  }, [rematchPending, showEmoji]);
+  }, [rematchPending, setPrediction, showEmoji]);
 
   const handleConnected = useCallback(() => {
     setChatMessages([]);
@@ -423,12 +469,14 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const activeRoomCode = p2p.activeRoomCode;
   const send = p2p.send;
   const setMessage = p2p.setMessage;
+  const myColor = currentMatch?.color;
 
   useEffect(() => {
     isHostRef.current = isHost;
+    guestColorRef.current = myColor ?? null;
     sendRef.current = send;
     setP2PMessageRef.current = setMessage;
-  }, [isHost, send, setMessage]);
+  }, [isHost, myColor, send, setMessage]);
 
   const startNewRound = useCallback(() => {
     const nextRound = roundRef.current + 1;
@@ -447,12 +495,21 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     const initial = createInitialState(Math.floor(Math.random() * 0xffffffff), roundRef.current);
     stateRef.current = initial;
     setState(initial);
+    remoteInputSequenceRef.current = 0;
+    remoteInputReceivedAtRef.current = 0;
+    remoteBombQueuedRef.current = false;
     setMessage("地图已生成，移动起来，别把自己炸了。 ");
+    sendRef.current({ type: "bomberman-state", roundId: initial.roundId, payload: initial });
     const timer = window.setInterval(() => {
       const previous = stateRef.current;
-      const next = stepHostState(previous, localInputRef.current, remoteInputRef.current, Date.now());
+      const now = Date.now();
+      const remoteInput = now - remoteInputReceivedAtRef.current <= 220
+        ? { ...remoteInputRef.current, placeBomb: remoteBombQueuedRef.current }
+        : { ...EMPTY_INPUT, placeBomb: remoteBombQueuedRef.current };
+      const next = stepHostState(previous, localInputRef.current, remoteInput, now);
       localInputRef.current = { ...localInputRef.current, placeBomb: false };
       remoteInputRef.current = { ...remoteInputRef.current, placeBomb: false };
+      remoteBombQueuedRef.current = false;
       stateRef.current = next;
       setState(next);
       sendRef.current({ type: "bomberman-state", roundId: next.roundId, payload: next });
@@ -461,29 +518,68 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     return () => window.clearInterval(timer);
   }, [currentMatch, isHost, isOnline, round, setMessage]);
 
+  const sendGuestInput = useCallback((input: InputState) => {
+    inputSequenceRef.current += 1;
+    sendRef.current({
+      type: "bomberman-input",
+      roundId: roundRef.current,
+      seq: inputSequenceRef.current,
+      payload: { input: { ...input, placeBomb: false } },
+    });
+  }, []);
+
   const updateInput = useCallback((patch: Partial<InputState>) => {
     const next = { ...localInputRef.current, ...patch };
     localInputRef.current = next;
+    if (guestPredictionRef.current) guestPredictionRef.current.lastInputAt = Date.now();
     if (!isHostRef.current) {
-      sendRef.current({ type: "bomberman-input", roundId: roundRef.current, payload: { input: next } });
+      sendGuestInput(next);
     }
-  }, []);
+  }, [sendGuestInput]);
 
   const triggerBomb = useCallback(() => {
     if (!isOnline || stateRef.current.status !== "playing") return;
     if (isHostRef.current) updateInput({ placeBomb: true });
-    else sendRef.current({ type: "bomberman-input", roundId: roundRef.current, payload: { input: { ...localInputRef.current, placeBomb: true } } });
+    else sendRef.current({ type: "bomberman-bomb", roundId: roundRef.current });
   }, [isOnline, updateInput]);
 
   useEffect(() => {
     if (!isOnline || isHost) return;
     const heartbeat = window.setInterval(() => {
-      const input = localInputRef.current;
-      if (!input.up && !input.down && !input.left && !input.right) return;
-      sendRef.current({ type: "bomberman-input", roundId: roundRef.current, payload: { input } });
-    }, 70);
+      sendGuestInput(localInputRef.current);
+    }, 50);
     return () => window.clearInterval(heartbeat);
-  }, [isHost, isOnline]);
+  }, [isHost, isOnline, sendGuestInput]);
+
+  useEffect(() => {
+    if (!isOnline || isHost || !myColor || state.status !== "playing") return;
+    const predictionTimer = window.setInterval(() => {
+      const currentState = stateRef.current;
+      const color = guestColorRef.current;
+      const direction = directionForInput(localInputRef.current);
+      const prediction = guestPredictionRef.current;
+      if (!color || currentState.status !== "playing" || !currentState.players[color].alive) return;
+      const now = Date.now();
+      if (!prediction) {
+        const serverPlayer = currentState.players[color];
+        setPrediction({ x: serverPlayer.x, y: serverPlayer.y, nextMoveAt: 0, lastInputAt: now });
+        return;
+      }
+      if (!direction) return;
+      if (now < prediction.nextMoveAt) return;
+      const nextX = prediction.x + direction[0];
+      const nextY = prediction.y + direction[1];
+      const canMove = canWalkTo(currentState, color, nextX, nextY);
+      const nextPrediction = {
+        ...prediction,
+        x: canMove ? nextX : prediction.x,
+        y: canMove ? nextY : prediction.y,
+        nextMoveAt: now + moveIntervalFor(currentState.players[color]),
+      };
+      setPrediction(nextPrediction);
+    }, 16);
+    return () => window.clearInterval(predictionTimer);
+  }, [isHost, isOnline, myColor, setPrediction, state.status]);
 
   useEffect(() => {
     const keyMap: Record<string, Direction> = { ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down", ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right" };
@@ -552,7 +648,6 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   }, [updateInput]);
 
   const opponentLabel = p2p.match?.opponentName ?? "等待玩家";
-  const myColor = p2p.match?.color;
   const myPlayer = myColor ? state.players[myColor] : null;
   const phaseLabel = displayPhase(p2p.phase, state);
   const isBusy = p2p.phase === "matching" || p2p.phase === "room-waiting" || p2p.phase === "connecting";
@@ -562,6 +657,8 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const bombs = useMemo(() => new Map(state.bombs.map((bomb) => [cellIndex(bomb.x, bomb.y), bomb])), [state.bombs]);
   const explosions = useMemo(() => new Set(state.explosions.flatMap((explosion) => explosion.cells)), [state.explosions]);
   const powerups = useMemo(() => new Map(state.powerups.map((powerup) => [cellIndex(powerup.x, powerup.y), powerup])), [state.powerups]);
+  const blackPosition = !isHost && myColor === "black" && guestPosition ? guestPosition : state.players.black;
+  const whitePosition = !isHost && myColor === "white" && guestPosition ? guestPosition : state.players.white;
 
   const copyRoomCode = useCallback(async () => {
     if (!activeRoomCode) return;
@@ -609,8 +706,8 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
                 </div>;
               })}
               <div className="bomberman-actors" aria-hidden="true">
-                {state.players.black.alive && <span className="bomber-player player-black" style={{ "--actor-x": state.players.black.x, "--actor-y": state.players.black.y } as CSSProperties}><i>你</i></span>}
-                {state.players.white.alive && <span className="bomber-player player-white" style={{ "--actor-x": state.players.white.x, "--actor-y": state.players.white.y } as CSSProperties}><i>{myColor === "white" ? "你" : "对"}</i></span>}
+                {state.players.black.alive && <span className="bomber-player player-black" style={{ "--actor-x": blackPosition.x, "--actor-y": blackPosition.y } as CSSProperties}><i>{myColor === "black" ? "你" : "对"}</i></span>}
+                {state.players.white.alive && <span className="bomber-player player-white" style={{ "--actor-x": whitePosition.x, "--actor-y": whitePosition.y } as CSSProperties}><i>{myColor === "white" ? "你" : "对"}</i></span>}
               </div>
             </div>
             {!p2p.isOnline && (
