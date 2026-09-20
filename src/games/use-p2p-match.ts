@@ -28,6 +28,10 @@ export type PeerMessage = Record<string, unknown> & {
   seq?: number;
 };
 
+/** `reliable` is ordered and retransmitted (moves, chat, rematch).
+ *  `state` and `input` are lossy and unordered, for anything disposable. */
+export type SendLane = "reliable" | "state" | "input";
+
 type MatchResponse = {
   status?: string;
   roomCode?: string;
@@ -127,22 +131,32 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     setIsOnline(false);
   }, []);
 
-  const send = useCallback((payload: PeerMessage) => {
-    const isStateSnapshot = payload.type?.endsWith("-state") === true;
-    const isRealtimeInput = payload.type?.endsWith("-input") === true;
-    const channel = isStateSnapshot
-      ? stateChannelRef.current
-      : isRealtimeInput
-        ? inputChannelRef.current
-        : channelRef.current;
+  const send = useCallback((payload: PeerMessage, options?: { lane?: SendLane }) => {
+    // Games may name their lanes explicitly; the `-state` / `-input` suffix is
+    // the shorthand the realtime games already use.
+    const lane: SendLane =
+      options?.lane ?? (payload.type?.endsWith("-state") ? "state" : payload.type?.endsWith("-input") ? "input" : "reliable");
+    const channel = lane === "state" ? stateChannelRef.current : lane === "input" ? inputChannelRef.current : channelRef.current;
     if (channel?.readyState !== "open") return false;
     // Realtime packets are disposable. Never queue stale snapshots or inputs
     // behind congestion and make either player react to the past.
-    const bufferLimit = isStateSnapshot ? 96 * 1024 : 8 * 1024;
-    if ((isStateSnapshot || isRealtimeInput) && channel.bufferedAmount > bufferLimit) return false;
+    const bufferLimit = lane === "state" ? 96 * 1024 : 8 * 1024;
+    if (lane !== "reliable" && channel.bufferedAmount > bufferLimit) return false;
     channel.send(JSON.stringify({ gameId, ...payload }));
     return true;
   }, [gameId]);
+
+  /** Turn-based games swap sides between rounds so the same player does not
+   *  always move first. The channel assignment is unaffected — DataChannels are
+   *  negotiated once, and both peers flip deterministically. */
+  const swapColor = useCallback(() => {
+    setMatch((current) => {
+      if (!current) return current;
+      const next: P2PMatch = { ...current, color: current.color === "black" ? "white" : "black" };
+      matchRef.current = next;
+      return next;
+    });
+  }, []);
 
   const sendSignal = useCallback(async (nextMatch: P2PMatch, type: "offer" | "answer", description: RTCSessionDescriptionInit) => {
     const result = await fetch(apiUrl("/api/signal"), {
@@ -450,6 +464,7 @@ export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, on
     setMessage,
     isHost: match?.color === "black",
     send,
+    swapColor,
     startMatching,
     createRoom,
     joinRoom,
