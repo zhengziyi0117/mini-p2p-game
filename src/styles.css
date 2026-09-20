@@ -2097,6 +2097,59 @@ button.game-card {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 370px);
 }
 
+.bomberman-scoreline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.bomberman-scoreline b {
+  color: rgba(29, 28, 26, 0.26);
+}
+
+.bomberman-scoreline .score-mine,
+.bomberman-scoreline .score-theirs {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(255, 253, 248, 0.58);
+  font-variant-numeric: tabular-nums;
+}
+
+.bomberman-scoreline .score-mine {
+  border-color: rgba(189, 61, 45, 0.28);
+  color: var(--red-dark);
+  font-weight: 600;
+}
+
+.bomberman-scoreline .is-idle {
+  opacity: 0.5;
+}
+
+.bomberman-scoreline .score-target {
+  color: rgba(102, 97, 90, 0.72);
+}
+
+.bomberman-scoreline .hazard {
+  border: 1px solid rgba(239, 138, 44, 0.36);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(239, 138, 44, 0.14);
+  color: #8a5216;
+  font-variant-numeric: tabular-nums;
+}
+
+.bomberman-scoreline .hazard.is-active {
+  border-color: rgba(189, 61, 45, 0.4);
+  background: rgba(189, 61, 45, 0.14);
+  color: var(--red-dark);
+  animation: bomber-bomb-pulse 760ms ease-in-out infinite;
+}
+
 .bomberman-stage {
   position: relative;
   width: min(100%, 820px);
@@ -2293,6 +2346,15 @@ button.game-card {
 
 .player-black i { color: #fffaf0; }
 .player-white i { color: #403228; }
+
+/* A downed player stays where they fell, so both sides can see how the round
+   ended instead of the sprite simply vanishing. */
+.bomberman-actors .bomber-player.is-out {
+  opacity: 0.32;
+  filter: grayscale(1);
+  transform: translate(-50%, -50%) scale(0.76) rotate(-14deg);
+  box-shadow: none;
+}
 
 .bomberman-overlay {
   position: absolute;

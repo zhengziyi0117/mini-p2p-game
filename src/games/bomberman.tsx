@@ -13,286 +13,41 @@ import {
   Swords,
   Users,
 } from "lucide-react";
+import {
+  EMPTY_INPUT,
+  GRID_HEIGHT,
+  GRID_WIDTH,
+  SCORE_TO_WIN,
+  SUDDEN_DEATH_TICKS,
+  canWalkTo,
+  cellIndex,
+  createInitialState,
+  createWaitingState,
+  directionForInput,
+  isBomberState,
+  isWall,
+  moveIntervalFor,
+  normalizeInput,
+  stepHostState,
+  type BomberState,
+  type Direction,
+  type InputState,
+  type PlayerColor,
+  type PowerupKind,
+} from "./bomberman-rules";
 import { GameChat, useGameChat } from "./game-chat";
-import { useP2PMatch, type PeerMessage, type PlayerColor } from "./use-p2p-match";
+import { useP2PMatch, type PeerMessage } from "./use-p2p-match";
 
-const GRID_WIDTH = 13;
-const GRID_HEIGHT = 11;
 const HOST_TICK_MS = 25;
 const STATE_BROADCAST_TICKS = 2;
 const MAX_PREDICTION_LEAD = 2;
 const IDLE_RECONCILE_MS = 650;
 const NICKNAME_KEY = "p2p-nickname";
 
-type Direction = "up" | "down" | "left" | "right";
-type InputState = Record<Direction, boolean> & { placeBomb: boolean };
-type PowerupKind = "bomb" | "flame" | "speed" | "shield";
-type PlayerState = {
-  x: number;
-  y: number;
-  alive: boolean;
-  maxBombs: number;
-  bombsAvailable: number;
-  flameLength: number;
-  speedLevel: number;
-  shield: boolean;
-  nextMoveAt: number;
-};
-type BombState = {
-  id: string;
-  owner: PlayerColor;
-  x: number;
-  y: number;
-  explodeAt: number;
-};
-type ExplosionState = {
-  cells: number[];
-  expiresAt: number;
-};
-type PowerupState = {
-  id: string;
-  kind: PowerupKind;
-  x: number;
-  y: number;
-};
-type BomberState = {
-  version: 2;
-  roundId: number;
-  seed: number;
-  tick: number;
-  status: "waiting" | "playing" | "finished";
-  winner: PlayerColor | "draw" | null;
-  blocks: number[];
-  bombs: BombState[];
-  explosions: ExplosionState[];
-  powerups: PowerupState[];
-  players: Record<PlayerColor, PlayerState>;
-};
-type GuestPrediction = { x: number; y: number; nextMoveAt: number; lastInputAt: number };
-
-const EMPTY_INPUT: InputState = { up: false, down: false, left: false, right: false, placeBomb: false };
 const POWERUP_GLYPHS: Record<PowerupKind, string> = { bomb: "💣", flame: "🔥", speed: "⚡", shield: "🛡️" };
 const POWERUP_LABELS: Record<PowerupKind, string> = { bomb: "炸弹 +1", flame: "火焰 +1", speed: "速度提升", shield: "护盾" };
 
-function cellIndex(x: number, y: number) {
-  return y * GRID_WIDTH + x;
-}
-
-function isWall(x: number, y: number) {
-  return x <= 0 || y <= 0 || x >= GRID_WIDTH - 1 || y >= GRID_HEIGHT - 1 || (x % 2 === 0 && y % 2 === 0);
-}
-
-function isSpawnSafe(x: number, y: number) {
-  return (
-    (x <= 2 && y <= 2) ||
-    (x >= GRID_WIDTH - 3 && y >= GRID_HEIGHT - 3)
-  );
-}
-
-function createInitialState(seed: number, roundId: number): BomberState {
-  let randomSeed = seed >>> 0;
-  const random = () => {
-    randomSeed = (randomSeed * 1664525 + 1013904223) >>> 0;
-    return randomSeed / 4294967296;
-  };
-  const blocks: number[] = [];
-  for (let y = 1; y < GRID_HEIGHT - 1; y += 1) {
-    for (let x = 1; x < GRID_WIDTH - 1; x += 1) {
-      if (isWall(x, y) || isSpawnSafe(x, y)) continue;
-      if (random() < 0.42) blocks.push(cellIndex(x, y));
-    }
-  }
-  return {
-    version: 2,
-    roundId,
-    seed,
-    tick: 0,
-    status: "playing",
-    winner: null,
-    blocks,
-    bombs: [],
-    explosions: [],
-    powerups: [],
-    players: {
-      black: { x: 1, y: 1, alive: true, maxBombs: 1, bombsAvailable: 1, flameLength: 2, speedLevel: 1, shield: false, nextMoveAt: 0 },
-      white: { x: GRID_WIDTH - 2, y: GRID_HEIGHT - 2, alive: true, maxBombs: 1, bombsAvailable: 1, flameLength: 2, speedLevel: 1, shield: false, nextMoveAt: 0 },
-    },
-  };
-}
-
-function createWaitingState(roundId: number) {
-  const state = createInitialState(1, roundId);
-  return { ...state, status: "waiting" as const, blocks: [] };
-}
-
-function hasBlock(state: BomberState, index: number) {
-  return state.blocks.includes(index);
-}
-
-function hasBomb(state: BomberState, index: number) {
-  return state.bombs.some((bomb) => cellIndex(bomb.x, bomb.y) === index);
-}
-
-function moveIntervalFor(player: PlayerState) {
-  if (player.speedLevel >= 3) return 50;
-  if (player.speedLevel === 2) return 75;
-  return 100;
-}
-
-function powerupDrop(seed: number, index: number): PowerupKind | null {
-  let value = (seed ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0;
-  value ^= value >>> 16;
-  value = Math.imul(value, 0x85ebca6b) >>> 0;
-  value ^= value >>> 13;
-  if (value % 100 >= 32) return null;
-  return (["bomb", "flame", "speed", "shield"] as const)[value % 4];
-}
-
-function applyPowerup(player: PlayerState, kind: PowerupKind) {
-  if (kind === "bomb") {
-    player.maxBombs = Math.min(3, player.maxBombs + 1);
-    player.bombsAvailable = Math.min(player.maxBombs, player.bombsAvailable + 1);
-  }
-  if (kind === "flame") player.flameLength = Math.min(5, player.flameLength + 1);
-  if (kind === "speed") player.speedLevel = Math.min(3, player.speedLevel + 1);
-  if (kind === "shield") player.shield = true;
-}
-
-function canWalkTo(state: BomberState, color: PlayerColor, x: number, y: number) {
-  if (isWall(x, y) || hasBlock(state, cellIndex(x, y)) || hasBomb(state, cellIndex(x, y))) return false;
-  const opponent = color === "black" ? state.players.white : state.players.black;
-  return !opponent.alive || opponent.x !== x || opponent.y !== y;
-}
-
-function directionForInput(input: InputState): [number, number] | null {
-  if (input.up) return [0, -1];
-  if (input.down) return [0, 1];
-  if (input.left) return [-1, 0];
-  if (input.right) return [1, 0];
-  return null;
-}
-
-function blastCells(state: BomberState, bomb: BombState, flameLength: number) {
-  const cells = [cellIndex(bomb.x, bomb.y)];
-  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  for (const [dx, dy] of directions) {
-    for (let distance = 1; distance <= flameLength; distance += 1) {
-      const x = bomb.x + dx * distance;
-      const y = bomb.y + dy * distance;
-      if (isWall(x, y)) break;
-      const index = cellIndex(x, y);
-      cells.push(index);
-      if (hasBlock(state, index)) break;
-    }
-  }
-  return cells;
-}
-
-function stepHostState(current: BomberState, localInput: InputState, remoteInput: InputState, now: number): BomberState {
-  if (current.status !== "playing") return current;
-  const next: BomberState = {
-    ...current,
-    tick: current.tick + 1,
-    blocks: [...current.blocks],
-    bombs: current.bombs.map((bomb) => ({ ...bomb })),
-    explosions: current.explosions.filter((explosion) => explosion.expiresAt > now).map((explosion) => ({ ...explosion, cells: [...explosion.cells] })),
-    players: {
-      black: { ...current.players.black },
-      white: { ...current.players.white },
-    },
-    powerups: current.powerups.map((powerup) => ({ ...powerup })),
-  };
-
-  for (const color of ["black", "white"] as const) {
-    const player = next.players[color];
-    const input = color === "black" ? localInput : remoteInput;
-    if (!player.alive) continue;
-    const direction = directionForInput(input);
-    if (direction && now >= player.nextMoveAt) {
-      const nextX = player.x + direction[0];
-      const nextY = player.y + direction[1];
-      if (canWalkTo(next, color, nextX, nextY)) {
-        player.x = nextX;
-        player.y = nextY;
-      }
-      player.nextMoveAt = now + moveIntervalFor(player);
-    }
-    if (input.placeBomb && player.bombsAvailable > 0 && !hasBomb(next, cellIndex(player.x, player.y))) {
-      next.bombs.push({
-        id: `${color}-${next.tick}`,
-        owner: color,
-        x: player.x,
-        y: player.y,
-        explodeAt: now + 1800,
-      });
-      player.bombsAvailable -= 1;
-    }
-  }
-
-  const exploding = next.bombs.filter((bomb) => bomb.explodeAt <= now);
-  next.bombs = next.bombs.filter((bomb) => bomb.explodeAt > now);
-  const blast = new Set<number>();
-  for (const bomb of exploding) {
-    const cells = blastCells(next, bomb, next.players[bomb.owner].flameLength);
-    cells.forEach((index) => blast.add(index));
-    next.players[bomb.owner].bombsAvailable = Math.min(next.players[bomb.owner].maxBombs, next.players[bomb.owner].bombsAvailable + 1);
-    const destroyedBlocks = next.blocks.filter((index) => cells.includes(index));
-    next.blocks = next.blocks.filter((index) => !cells.includes(index));
-    for (const index of destroyedBlocks) {
-      const kind = powerupDrop(next.seed, index);
-      if (kind) next.powerups.push({ id: `${next.roundId}-${index}`, kind, x: index % GRID_WIDTH, y: Math.floor(index / GRID_WIDTH) });
-    }
-    next.explosions.push({ cells, expiresAt: now + 500 });
-  }
-
-  if (blast.size > 0) {
-    for (const color of ["black", "white"] as const) {
-      const player = next.players[color];
-      if (player.alive && blast.has(cellIndex(player.x, player.y))) {
-        if (player.shield) player.shield = false;
-        else player.alive = false;
-      }
-    }
-  }
-
-  for (const color of ["black", "white"] as const) {
-    const player = next.players[color];
-    if (!player.alive) continue;
-    const pickupIndex = next.powerups.findIndex((powerup) => powerup.x === player.x && powerup.y === player.y);
-    if (pickupIndex >= 0) {
-      const [pickup] = next.powerups.splice(pickupIndex, 1);
-      applyPowerup(player, pickup.kind);
-    }
-  }
-
-  const alive = (["black", "white"] as const).filter((color) => next.players[color].alive);
-  if (alive.length === 1) {
-    next.status = "finished";
-    next.winner = alive[0];
-  } else if (alive.length === 0 && exploding.length > 0) {
-    next.status = "finished";
-    next.winner = "draw";
-  }
-  return next;
-}
-
-function normalizeInput(value: unknown): InputState {
-  if (!value || typeof value !== "object") return { ...EMPTY_INPUT };
-  const input = value as Partial<InputState>;
-  return {
-    up: Boolean(input.up),
-    down: Boolean(input.down),
-    left: Boolean(input.left),
-    right: Boolean(input.right),
-    placeBomb: Boolean(input.placeBomb),
-  };
-}
-
-function isBomberState(value: unknown): value is BomberState {
-  if (!value || typeof value !== "object") return false;
-  const state = value as Partial<BomberState>;
-  return state.version === 2 && Array.isArray(state.players) === false && Boolean(state.players?.black) && Boolean(state.players?.white) && Array.isArray(state.blocks) && Array.isArray(state.bombs) && Array.isArray(state.explosions) && Array.isArray(state.powerups);
-}
+type GuestPrediction = { x: number; y: number; nextMoveAt: number; lastInputAt: number };
 
 function formatResult(state: BomberState, color: PlayerColor | undefined) {
   if (state.winner === "draw") return "同归于尽，平局";
@@ -307,6 +62,12 @@ function displayPhase(phase: string, state: BomberState) {
   if (phase === "error") return "需要重试";
   if (phase === "playing" && state.status === "playing") return "对局中";
   return "等待开始";
+}
+
+/** Seconds until the map starts collapsing, or null once it already has. */
+function collapseCountdown(state: BomberState) {
+  if (state.suddenDeath) return null;
+  return Math.max(0, Math.ceil(((SUDDEN_DEATH_TICKS - state.tick) * HOST_TICK_MS) / 1000));
 }
 
 export function BombermanGame({ onBack }: { onBack: () => void }) {
@@ -476,7 +237,8 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     if (!isOnline || !isHost || !currentMatch) return;
-    const initial = createInitialState(Math.floor(Math.random() * 0xffffffff), roundRef.current);
+    // Carry the running match score across rounds; only the host decides it.
+    const initial = createInitialState(Math.floor(Math.random() * 0xffffffff), roundRef.current, stateRef.current.scores);
     stateRef.current = initial;
     setState(initial);
     remoteInputSequenceRef.current = 0;
@@ -633,6 +395,10 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const powerups = useMemo(() => new Map(state.powerups.map((powerup) => [cellIndex(powerup.x, powerup.y), powerup])), [state.powerups]);
   const blackPosition = !isHost && myColor === "black" && guestPosition ? guestPosition : state.players.black;
   const whitePosition = !isHost && myColor === "white" && guestPosition ? guestPosition : state.players.white;
+  const myScore = myColor === "white" ? state.scores.white : state.scores.black;
+  const theirScore = myColor === "white" ? state.scores.black : state.scores.white;
+  const matchDecided = myScore >= SCORE_TO_WIN || theirScore >= SCORE_TO_WIN;
+  const collapseIn = collapseCountdown(state);
 
   const copyRoomCode = useCallback(async () => {
     if (!activeRoomCode) return;
@@ -660,7 +426,19 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
       <section className="game-layout bomberman-layout">
         <div className="board-column">
           <div className="eyebrow-row">
-            <div><p className="eyebrow">BOMBERMAN · ROUND {round}</p><h1>一起炸出一条路。</h1></div>
+            <div>
+              <p className="eyebrow">BOMBERMAN · ROUND {round}</p>
+              <h1>一起炸出一条路。</h1>
+              <div className="bomberman-scoreline">
+                <span className={`score-mine ${myColor ? "" : "is-idle"}`}>你 {myScore}</span>
+                <b>:</b>
+                <span className={`score-theirs ${myColor ? "" : "is-idle"}`}>{theirScore} 对手</span>
+                <span className="score-target">先到 {SCORE_TO_WIN} 分</span>
+                {state.status === "playing" && (state.suddenDeath
+                  ? <span className="hazard is-active">地图塌方中</span>
+                  : collapseIn !== null && <span className="hazard">塌方倒计时 {collapseIn}s</span>)}
+              </div>
+            </div>
             <div className={`phase-pill phase-${p2p.phase}`}><span className="phase-dot" />{phaseLabel}</div>
           </div>
 
@@ -680,8 +458,8 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
                 </div>;
               })}
               <div className="bomberman-actors" aria-hidden="true">
-                {state.players.black.alive && <span className="bomber-player player-black" style={{ "--actor-x": blackPosition.x, "--actor-y": blackPosition.y } as CSSProperties}><i>{myColor === "black" ? "你" : "对"}</i></span>}
-                {state.players.white.alive && <span className="bomber-player player-white" style={{ "--actor-x": whitePosition.x, "--actor-y": whitePosition.y } as CSSProperties}><i>{myColor === "white" ? "你" : "对"}</i></span>}
+                <span className={`bomber-player player-black ${state.players.black.alive ? "" : "is-out"}`} style={{ "--actor-x": blackPosition.x, "--actor-y": blackPosition.y } as CSSProperties}><i>{myColor === "black" ? "你" : "对"}</i></span>
+                <span className={`bomber-player player-white ${state.players.white.alive ? "" : "is-out"}`} style={{ "--actor-x": whitePosition.x, "--actor-y": whitePosition.y } as CSSProperties}><i>{myColor === "white" ? "你" : "对"}</i></span>
               </div>
             </div>
             {!p2p.isOnline && (
@@ -713,7 +491,7 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
 
           {state.status === "finished" && p2p.match && (
             <section className={`round-result ${state.winner === "draw" ? "result-draw" : state.winner === myColor ? "result-win" : "result-loss"}`} aria-live="polite">
-              <div className="round-result-copy"><span className="result-icon"><Bomb size={19} /></span><div><p>第 {round} 局结束</p><h2>{formatResult(state, myColor)}</h2><span>不离开房间，和同一个朋友继续下一局。</span></div></div>
+              <div className="round-result-copy"><span className="result-icon"><Bomb size={19} /></span><div><p>第 {round} 局结束</p><h2>{formatResult(state, myColor)}</h2><span>{matchDecided ? myScore >= SCORE_TO_WIN ? `这一场你已经先到 ${SCORE_TO_WIN} 分，随时可以收工。` : `这一场对手先到 ${SCORE_TO_WIN} 分，再来一局就扳回来。` : `当前比分 你 ${myScore} : ${theirScore} 对手，先到 ${SCORE_TO_WIN} 分。`}</span></div></div>
               <div className="round-result-actions">
                 {rematchPending === "incoming" ? <><button className="result-secondary" type="button" onClick={() => respondRematch(false)}>稍后</button><button className="result-primary" type="button" onClick={() => respondRematch(true)}>接受再来一局</button></> : <button className="result-primary" type="button" disabled={!p2p.isOnline || rematchPending === "outgoing"} onClick={requestRematch}><RotateCcw size={16} />{rematchPending === "outgoing" ? "等待对手确认" : "和同一位对手再来一局"}</button>}
               </div>
