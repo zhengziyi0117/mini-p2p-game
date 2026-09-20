@@ -5,19 +5,15 @@ import {
   ArrowLeft,
   Bomb,
   Check,
-  ChevronDown,
-  ChevronUp,
   Copy,
   KeyRound,
   LoaderCircle,
   LogOut,
-  MessageCircle,
   RotateCcw,
-  Send,
-  SmilePlus,
   Swords,
   Users,
 } from "lucide-react";
+import { GameChat, useGameChat } from "./game-chat";
 import { useP2PMatch, type PeerMessage, type PlayerColor } from "./use-p2p-match";
 
 const GRID_WIDTH = 13;
@@ -26,7 +22,7 @@ const HOST_TICK_MS = 25;
 const STATE_BROADCAST_TICKS = 2;
 const MAX_PREDICTION_LEAD = 2;
 const IDLE_RECONCILE_MS = 650;
-const QUICK_EMOJIS = ["👏", "😂", "😮", "👍", "🤔", "🔥", "🎉", "🙏"];
+const NICKNAME_KEY = "p2p-nickname";
 
 type Direction = "up" | "down" | "left" | "right";
 type InputState = Record<Direction, boolean> & { placeBomb: boolean };
@@ -72,7 +68,6 @@ type BomberState = {
   powerups: PowerupState[];
   players: Record<PlayerColor, PlayerState>;
 };
-type ChatMessage = { id: string; sender: "self" | "opponent"; text: string };
 type GuestPrediction = { x: number; y: number; nextMoveAt: number; lastInputAt: number };
 
 const EMPTY_INPUT: InputState = { up: false, down: false, left: false, right: false, placeBomb: false };
@@ -315,17 +310,11 @@ function displayPhase(phase: string, state: BomberState) {
 }
 
 export function BombermanGame({ onBack }: { onBack: () => void }) {
-  const [nickname, setNickname] = useState(() => (typeof window === "undefined" ? "" : window.localStorage.getItem("bomberman-nickname") ?? ""));
+  const [nickname, setNickname] = useState(() => (typeof window === "undefined" ? "" : window.localStorage.getItem(NICKNAME_KEY) ?? ""));
   const [mode, setMode] = useState<"quick" | "room">("quick");
   const [roomCode, setRoomCode] = useState("");
   const [state, setState] = useState<BomberState>(() => createWaitingState(1));
   const [round, setRound] = useState(1);
-  const [chatOpen, setChatOpen] = useState(true);
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [unreadChat, setUnreadChat] = useState(0);
-  const [emojiOpen, setEmojiOpen] = useState(false);
-  const [lastEmoji, setLastEmoji] = useState<{ emoji: string; sender: "self" | "opponent" } | null>(null);
   const [rematchPending, setRematchPending] = useState<"outgoing" | "incoming" | null>(null);
   const [guestPosition, setGuestPosition] = useState<{ x: number; y: number } | null>(null);
 
@@ -343,8 +332,6 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
   const sendRef = useRef<(message: PeerMessage) => boolean>(() => false);
   const setP2PMessageRef = useRef<(message: string) => void>(() => undefined);
   const startNewRoundRef = useRef<() => void>(() => undefined);
-  const chatOpenRef = useRef(true);
-  const emojiTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -354,18 +341,10 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     roundRef.current = round;
   }, [round]);
 
-  useEffect(() => {
-    chatOpenRef.current = chatOpen;
-  }, [chatOpen]);
-
-  const showEmoji = useCallback((emoji: string, sender: "self" | "opponent") => {
-    setLastEmoji({ emoji, sender });
-    if (emojiTimerRef.current) window.clearTimeout(emojiTimerRef.current);
-    emojiTimerRef.current = window.setTimeout(() => {
-      setLastEmoji(null);
-      emojiTimerRef.current = null;
-    }, 1800);
-  }, []);
+  const chat = useGameChat({
+    send: useCallback((payload: Record<string, unknown>) => sendRef.current({ ...payload, roundId: roundRef.current }), []),
+    onNotice: useCallback((text: string) => setP2PMessageRef.current(text), []),
+  });
 
   const resetLocalGame = useCallback(() => {
     stateRef.current = createWaitingState(roundRef.current);
@@ -435,14 +414,12 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
       setState(payload);
       return;
     }
-    if (message.type === "chat" && typeof message.text === "string") {
-      const text = message.text.slice(0, 120);
-      setChatMessages((current) => [...current, { id: `opponent-${Date.now()}`, sender: "opponent", text }]);
-      if (!chatOpenRef.current) setUnreadChat((current) => current + 1);
+    if (message.type === "chat") {
+      chat.receiveChat(message.text);
       return;
     }
-    if (message.type === "emoji" && typeof message.emoji === "string" && QUICK_EMOJIS.includes(message.emoji)) {
-      showEmoji(message.emoji, "opponent");
+    if (message.type === "emoji") {
+      chat.receiveEmoji(message.emoji);
       return;
     }
     if (message.type === "bomberman-rematch-request" && stateRef.current.status === "finished") {
@@ -462,17 +439,12 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
         setP2PMessageRef.current("对手暂时不想继续这一局。 ");
       }
     }
-  }, [rematchPending, setPrediction, showEmoji]);
-
-  const handleConnected = useCallback(() => {
-    setChatMessages([]);
-    setUnreadChat(0);
-  }, []);
+  }, [chat.receiveChat, chat.receiveEmoji, rematchPending, setPrediction]);
 
   const p2p = useP2PMatch({
     gameId: "bomberman",
     onMessage: handlePeerMessage,
-    onConnected: handleConnected,
+    onConnected: chat.resetChat,
     onReset: resetLocalGame,
   });
   const isHost = p2p.isHost;
@@ -628,21 +600,6 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
     };
   }, [isOnline, triggerBomb, updateInput]);
 
-  const sendChat = useCallback(() => {
-    const text = chatInput.trim().replace(/\s+/g, " ").slice(0, 120);
-    if (!text || !isOnline) return;
-    setChatMessages((current) => [...current, { id: `self-${Date.now()}`, sender: "self", text }]);
-    setChatInput("");
-    send({ type: "chat", roundId: roundRef.current, text });
-  }, [chatInput, isOnline, send]);
-
-  const sendEmoji = useCallback((emoji: string) => {
-    if (!isOnline) return;
-    showEmoji(emoji, "self");
-    send({ type: "emoji", roundId: roundRef.current, emoji });
-    setEmojiOpen(false);
-  }, [isOnline, send, showEmoji]);
-
   const requestRematch = useCallback(() => {
     if (!isOnline || stateRef.current.status !== "finished" || rematchPending) return;
     setRematchPending("outgoing");
@@ -734,7 +691,7 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
                 <span>{p2p.phase === "room-waiting" ? <>把房间号 <b>{p2p.activeRoomCode}</b> 发给朋友。</> : "两位玩家连上后，房主地图会同步过来。"}</span>
               </div>
             )}
-            {lastEmoji && <div className={`emoji-burst emoji-${lastEmoji.sender}`} aria-live="polite"><span>{lastEmoji.emoji}</span><small>{lastEmoji.sender === "self" ? "你" : opponentLabel}</small></div>}
+            {chat.lastEmoji && <div className={`emoji-burst emoji-${chat.lastEmoji.sender}`} aria-live="polite"><span>{chat.lastEmoji.emoji}</span><small>{chat.lastEmoji.sender === "self" ? "你" : opponentLabel}</small></div>}
           </div>
 
           <div className="bomberman-hud" aria-label="道具状态">
@@ -786,10 +743,7 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
             <p className="tip-note"><span>TIP</span> 方向键 / WASD 移动，Space 放炸弹；手机用下方方向盘。</p>
           </aside>
 
-          <section className={`chat-dock independent-chat ${chatOpen ? "chat-open" : ""}`} aria-label="对局聊天">
-            <div className="chat-card-heading"><div className="chat-title-group"><span className="chat-title-icon"><MessageCircle size={17} /></span><div><strong>对局聊天</strong><span>{p2p.isOnline ? `正在和 ${opponentLabel} 直连聊天` : "匹配成功后即可发送消息"}</span></div></div><div className="chat-heading-actions"><span className={`chat-status ${p2p.isOnline ? "online" : ""}`}><i />{p2p.isOnline ? "在线" : "离线"}</span>{unreadChat > 0 && <b className="chat-unread">{unreadChat > 9 ? "9+" : unreadChat}</b>}<button className="chat-collapse" type="button" aria-label={chatOpen ? "收起聊天" : "展开聊天"} aria-expanded={chatOpen} onClick={() => { const next = !chatOpen; chatOpenRef.current = next; setChatOpen(next); if (next) setUnreadChat(0); }}>{chatOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}</button></div></div>
-            {chatOpen && <div className="chat-panel"><div className="chat-messages" aria-live="polite">{chatMessages.length === 0 ? <div className="chat-empty"><MessageCircle size={20} /><p>{p2p.isOnline ? "已经连上了，先给对手发个表情吧。" : "对局建立后，消息和表情都会通过 P2P 发送。"}</p></div> : chatMessages.map((item) => <div className={`chat-message ${item.sender === "self" ? "from-self" : "from-opponent"}`} key={item.id}><small>{item.sender === "self" ? "你" : opponentLabel}</small><span>{item.text}</span></div>)}</div><div className="emoji-toolbar"><button className={`emoji-toggle ${emojiOpen ? "active" : ""}`} type="button" disabled={!p2p.isOnline} onClick={() => setEmojiOpen((open) => !open)}><SmilePlus size={15} /> 快捷表情</button>{emojiOpen && <div className="emoji-picker" aria-label="快捷表情">{QUICK_EMOJIS.map((emoji) => <button type="button" key={emoji} aria-label={`发送${emoji}`} onClick={() => sendEmoji(emoji)}>{emoji}</button>)}</div>}</div><form className="chat-compose" onSubmit={(event) => { event.preventDefault(); sendChat(); }}><input aria-label="聊天消息" value={chatInput} maxLength={120} disabled={!p2p.isOnline} placeholder={p2p.isOnline ? "输入消息，按回车发送" : "等待建立 P2P 连接"} onChange={(event) => setChatInput(event.target.value)} /><button type="submit" aria-label="发送消息" disabled={!p2p.isOnline || !chatInput.trim()}><Send size={16} /></button></form></div>}
-          </section>
+          <GameChat panelId="bomberman-chat-panel" isOnline={p2p.isOnline} opponentLabel={opponentLabel} chat={chat} />
         </div>
       </section>
 

@@ -5,8 +5,6 @@ import {
   ArrowLeft,
   Bomb,
   Check,
-  ChevronDown,
-  ChevronUp,
   CircleHelp,
   Copy,
   Gamepad2,
@@ -14,44 +12,28 @@ import {
   KeyRound,
   LoaderCircle,
   LogOut,
-  MessageCircle,
   Radio,
   RotateCcw,
-  Send,
   ShieldCheck,
   Sparkles,
   Swords,
-  SmilePlus,
   Undo2,
   Users,
 } from "lucide-react";
 import { BombermanGame } from "./games/bomberman";
+import { GameChat, useGameChat } from "./games/game-chat";
+import { useP2PMatch, type MatchPhase, type P2PMatch, type PeerMessage, type SendLane } from "./games/use-p2p-match";
 
 type Color = "black" | "white";
 type Cell = Color | null;
-type Phase = "idle" | "matching" | "room-waiting" | "connecting" | "playing" | "finished" | "error";
 type MatchMode = "quick" | "room";
 type GameId = "gomoku" | "bomberman";
 type MoveRecord = { index: number; color: Color };
-type ChatMessage = { id: string; sender: "self" | "opponent"; text: string; sentAt: number };
-type EmojiSender = "self" | "opponent";
-type RematchState = "outgoing" | "incoming" | null;
-type MatchInfo = {
-  matchId: string;
-  playerId: string;
-  opponentId: string;
-  opponentName: string;
-  color: Color;
-  roomCode?: string;
-};
+type PendingState = "outgoing" | "incoming" | null;
 
 const BOARD_SIZE = 15;
 const BOARD_CELLS = BOARD_SIZE * BOARD_SIZE;
-const QUICK_EMOJIS = ["👏", "😂", "😮", "👍", "🤔", "🔥", "🎉", "🙏"];
-const STUN_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun.cloudflare.com:3478" },
-];
+const NICKNAME_KEY = "p2p-nickname";
 
 type ModelToolContext = {
   registerTool: (
@@ -71,19 +53,10 @@ declare global {
   interface Document {
     modelContext?: ModelToolContext;
   }
-
-  interface Window {
-    __P2P_SIGNAL_ORIGIN__?: string;
-  }
 }
 
 function blankBoard(): Cell[] {
   return Array.from({ length: BOARD_CELLS }, () => null);
-}
-
-function makePlayerId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
-  return `player-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
 
 function resultForMove(board: Cell[], index: number, color: Color): Color | "draw" | null {
@@ -119,85 +92,44 @@ function resultForMove(board: Cell[], index: number, color: Color): Color | "dra
   return board.every(Boolean) ? "draw" : null;
 }
 
-function delay(milliseconds: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
-function apiUrl(path: string) {
-  if (typeof window === "undefined") return path;
-  const origin = window.__P2P_SIGNAL_ORIGIN__?.replace(/\/$/, "") ?? "";
-  return `${origin}${path}`;
-}
-
-function statusCopy(phase: Phase, match: MatchInfo | null, turn: Color, winner: Color | "draw" | null) {
+function gomokuStatus(phase: MatchPhase, match: P2PMatch | null, turn: Color, winner: Color | "draw" | null) {
+  if (winner === "draw") return "棋盘已满，和棋";
+  if (winner) return winner === match?.color ? "漂亮，你赢了" : "这局惜败，再来一盘";
   if (phase === "idle") return "准备好就开始匹配";
   if (phase === "matching") return "正在寻找对手…";
   if (phase === "room-waiting") return "房间已创建，等待加入";
   if (phase === "connecting") return "对手已找到，建立直连…";
-  if (phase === "finished") {
-    if (winner === "draw") return "棋盘已满，和棋";
-    return winner === match?.color ? "漂亮，你赢了" : "这局惜败，再来一盘";
-  }
   if (phase === "error") return "连接中断了";
   return turn === match?.color ? "轮到你落子" : "等待对手落子";
 }
 
-function readableError(error: unknown) {
-  return error instanceof Error ? error.message : "请求没有完成，请稍后重试。";
-}
-
 function GomokuGame({ onBack }: { onBack: () => void }) {
-  const [nickname, setNickname] = useState(() => (typeof window === "undefined" ? "" : window.localStorage.getItem("gomoku-nickname") ?? ""));
+  const [nickname, setNickname] = useState(() => (typeof window === "undefined" ? "" : window.localStorage.getItem(NICKNAME_KEY) ?? ""));
   const [mode, setMode] = useState<MatchMode>("quick");
   const [roomCode, setRoomCode] = useState("");
-  const [activeRoomCode, setActiveRoomCode] = useState("");
   const [board, setBoard] = useState<Cell[]>(blankBoard);
   const [moveHistory, setMoveHistory] = useState<MoveRecord[]>([]);
   const [turn, setTurn] = useState<Color>("black");
   const [winner, setWinner] = useState<Color | "draw" | null>(null);
-  const [phase, setPhaseState] = useState<Phase>("idle");
-  const [match, setMatch] = useState<MatchInfo | null>(null);
-  const [message, setMessage] = useState("输入昵称，和下一位棋手来一盘。 ");
-  const [isOnline, setIsOnline] = useState(false);
-  const [undoPending, setUndoPending] = useState<"outgoing" | "incoming" | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [unreadChat, setUnreadChat] = useState(0);
-  const [emojiOpen, setEmojiOpen] = useState(false);
   const [opponentHover, setOpponentHover] = useState<number | null>(null);
-  const [lastEmoji, setLastEmoji] = useState<{ emoji: string; sender: EmojiSender } | null>(null);
-  const [rematchPending, setRematchPending] = useState<RematchState>(null);
+  const [undoPending, setUndoPending] = useState<PendingState>(null);
+  const [rematchPending, setRematchPending] = useState<PendingState>(null);
   const [round, setRound] = useState(1);
 
-  const playerIdRef = useRef("");
-  const phaseRef = useRef<Phase>("idle");
+  const phaseRef = useRef<MatchPhase>("idle");
   const boardRef = useRef<Cell[]>(blankBoard());
   const moveHistoryRef = useRef<MoveRecord[]>([]);
   const turnRef = useRef<Color>("black");
   const winnerRef = useRef<Color | "draw" | null>(null);
-  const matchRef = useRef<MatchInfo | null>(null);
-  const peerRef = useRef<RTCPeerConnection | null>(null);
-  const channelRef = useRef<RTCDataChannel | null>(null);
-  const signalCursorRef = useRef(0);
-  const stopSignalPollingRef = useRef(false);
-  const matchPollingRef = useRef(false);
-  const undoPendingRef = useRef<"outgoing" | "incoming" | null>(null);
-  const rematchPendingRef = useRef<RematchState>(null);
-  const chatOpenRef = useRef(true);
-  const emojiTimerRef = useRef<number | null>(null);
+  const roundRef = useRef(1);
+  const matchRef = useRef<P2PMatch | null>(null);
+  const undoPendingRef = useRef<PendingState>(null);
+  const rematchPendingRef = useRef<PendingState>(null);
+  const sendRef = useRef<(payload: PeerMessage, options?: { lane?: SendLane }) => boolean>(() => false);
+  const noticeRef = useRef<(text: string) => void>(() => undefined);
+  const swapColorRef = useRef<() => void>(() => undefined);
   const startMatchingRef = useRef<(() => Promise<void>) | null>(null);
   const placeStoneRef = useRef<((index: number) => { ok: boolean; reason?: string }) | null>(null);
-
-  useEffect(() => {
-    const nextPlayerId = window.sessionStorage.getItem("gomoku-player-id") ?? makePlayerId();
-    window.sessionStorage.setItem("gomoku-player-id", nextPlayerId);
-    playerIdRef.current = nextPlayerId;
-  }, []);
-
-  useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
 
   useEffect(() => {
     boardRef.current = board;
@@ -212,36 +144,23 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
   }, [winner]);
 
   useEffect(() => {
-    matchRef.current = match;
-  }, [match]);
+    roundRef.current = round;
+  }, [round]);
 
-  useEffect(() => {
-    chatOpenRef.current = chatOpen;
-  }, [chatOpen]);
-
-  const setPhase = useCallback((nextPhase: Phase) => {
-    phaseRef.current = nextPhase;
-    setPhaseState(nextPhase);
-  }, []);
-
-  const setUndoState = useCallback((nextState: "outgoing" | "incoming" | null) => {
+  const setUndoState = useCallback((nextState: PendingState) => {
     undoPendingRef.current = nextState;
     setUndoPending(nextState);
   }, []);
 
-  const setRematchState = useCallback((nextState: RematchState) => {
+  const setRematchState = useCallback((nextState: PendingState) => {
     rematchPendingRef.current = nextState;
     setRematchPending(nextState);
   }, []);
 
-  const showEmoji = useCallback((emoji: string, sender: EmojiSender) => {
-    setLastEmoji({ emoji, sender });
-    if (emojiTimerRef.current) window.clearTimeout(emojiTimerRef.current);
-    emojiTimerRef.current = window.setTimeout(() => {
-      setLastEmoji(null);
-      emojiTimerRef.current = null;
-    }, 1800);
-  }, []);
+  const chat = useGameChat({
+    send: useCallback((payload: Record<string, unknown>) => sendRef.current({ ...payload, roundId: roundRef.current }), []),
+    onNotice: useCallback((text: string) => noticeRef.current(text), []),
+  });
 
   const resetRound = useCallback(() => {
     const nextBoard = blankBoard();
@@ -255,110 +174,50 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
     setWinner(null);
     setUndoState(null);
     setRematchState(null);
-    setEmojiOpen(false);
     setOpponentHover(null);
-    setLastEmoji(null);
   }, [setRematchState, setUndoState]);
 
-  const resetBoard = useCallback(() => {
+  const resetMatch = useCallback(() => {
     resetRound();
-    setChatMessages([]);
-    setChatInput("");
-    setUnreadChat(0);
-    setChatOpen(true);
+    chat.resetChat();
+    roundRef.current = 1;
     setRound(1);
-  }, [resetRound]);
+  }, [chat.resetChat, resetRound]);
 
-  const closeConnection = useCallback(() => {
-    stopSignalPollingRef.current = true;
-    setIsOnline(false);
-    channelRef.current?.close();
-    peerRef.current?.close();
-    channelRef.current = null;
-    peerRef.current = null;
-    setOpponentHover(null);
-  }, []);
-
-  const sendPeerMessage = useCallback((payload: Record<string, unknown>) => {
-    const channel = channelRef.current;
-    if (channel?.readyState === "open") channel.send(JSON.stringify(payload));
-  }, []);
-
-  const sendHover = useCallback(
-    (index: number | null) => {
-      if (!matchRef.current || !isOnline || phaseRef.current !== "playing") return;
-      sendPeerMessage({ type: "hover", index });
-    },
-    [isOnline, sendPeerMessage],
-  );
-
-  const sendChat = useCallback(() => {
-    const text = chatInput.trim().replace(/\s+/g, " ").slice(0, 120);
-    if (!text) return;
-    if (!matchRef.current || !isOnline) {
-      setMessage("建立直连后才能聊天。 ");
-      return;
+  const applyMove = useCallback((index: number, color: Color, send: boolean) => {
+    if (
+      index < 0 ||
+      index >= BOARD_CELLS ||
+      boardRef.current[index] !== null ||
+      winnerRef.current ||
+      undoPendingRef.current ||
+      turnRef.current !== color ||
+      phaseRef.current !== "playing"
+    ) {
+      return false;
     }
-    setChatMessages((current) => [
-      ...current,
-      { id: `self-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, sender: "self", text, sentAt: Date.now() },
-    ]);
-    setChatInput("");
-    sendPeerMessage({ type: "chat", text });
-  }, [chatInput, isOnline, sendPeerMessage]);
 
-  const sendEmoji = useCallback(
-    (emoji: string) => {
-      if (!matchRef.current || !isOnline) {
-        setMessage("建立直连后才能发送表情。 ");
-        return;
-      }
-      showEmoji(emoji, "self");
-      sendPeerMessage({ type: "emoji", emoji });
-      setEmojiOpen(false);
-    },
-    [isOnline, sendPeerMessage, showEmoji],
-  );
+    const nextBoard = boardRef.current.slice();
+    nextBoard[index] = color;
+    boardRef.current = nextBoard;
+    const nextHistory = [...moveHistoryRef.current, { index, color }];
+    moveHistoryRef.current = nextHistory;
+    setBoard(nextBoard);
+    setMoveHistory(nextHistory);
 
-  const applyMove = useCallback(
-    (index: number, color: Color, send: boolean) => {
-      if (
-        index < 0 ||
-        index >= BOARD_CELLS ||
-        boardRef.current[index] !== null ||
-        winnerRef.current ||
-        undoPendingRef.current ||
-        turnRef.current !== color ||
-        (phaseRef.current !== "playing" && phaseRef.current !== "finished")
-      ) {
-        return false;
-      }
+    const result = resultForMove(nextBoard, index, color);
+    if (result) {
+      winnerRef.current = result;
+      setWinner(result);
+    } else {
+      const nextTurn = color === "black" ? "white" : "black";
+      turnRef.current = nextTurn;
+      setTurn(nextTurn);
+    }
 
-      const nextBoard = boardRef.current.slice();
-      nextBoard[index] = color;
-      boardRef.current = nextBoard;
-      const nextHistory = [...moveHistoryRef.current, { index, color }];
-      moveHistoryRef.current = nextHistory;
-      setBoard(nextBoard);
-      setMoveHistory(nextHistory);
-
-      const result = resultForMove(nextBoard, index, color);
-      if (result) {
-        winnerRef.current = result;
-        setWinner(result);
-        setPhase("finished");
-        stopSignalPollingRef.current = true;
-      } else {
-        const nextTurn = color === "black" ? "white" : "black";
-        turnRef.current = nextTurn;
-        setTurn(nextTurn);
-      }
-
-      if (send) sendPeerMessage({ type: "move", index, color });
-      return true;
-    },
-    [sendPeerMessage, setPhase],
-  );
+    if (send) sendRef.current({ type: "move", roundId: roundRef.current, index, color });
+    return true;
+  }, []);
 
   const undoLastMove = useCallback(() => {
     const history = moveHistoryRef.current;
@@ -377,461 +236,195 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
     setWinner(null);
     setTurn(lastMove.color);
     setUndoState(null);
-    stopSignalPollingRef.current = true;
-    setPhase("playing");
     return true;
-  }, [setPhase, setUndoState]);
+  }, [setUndoState]);
 
   const requestUndo = useCallback(() => {
-    if (!matchRef.current || !isOnline || !moveHistoryRef.current.length) return;
-    if (phaseRef.current !== "playing" && phaseRef.current !== "finished") return;
-    if (undoPendingRef.current) return;
+    if (phaseRef.current !== "playing" || undoPendingRef.current || !moveHistoryRef.current.length) return;
     setUndoState("outgoing");
-    setMessage("已发出悔棋请求，等待对方确认… ");
-    sendPeerMessage({ type: "undo-request" });
-  }, [isOnline, sendPeerMessage, setUndoState]);
+    noticeRef.current("已发出悔棋请求，等待对方确认… ");
+    sendRef.current({ type: "undo-request", roundId: roundRef.current });
+  }, [setUndoState]);
 
   const respondToUndo = useCallback(
     (accepted: boolean) => {
       if (undoPendingRef.current !== "incoming") return;
-      sendPeerMessage({ type: "undo-response", accepted });
+      sendRef.current({ type: "undo-response", roundId: roundRef.current, accepted });
       if (accepted) {
         undoLastMove();
-        setMessage("已同意悔棋，回到上一步。 ");
+        noticeRef.current("已同意悔棋，回到上一步。 ");
       } else {
         setUndoState(null);
-        setMessage("已拒绝对方的悔棋请求。 ");
+        noticeRef.current("已拒绝对方的悔棋请求。 ");
       }
     },
-    [sendPeerMessage, setUndoState, undoLastMove],
+    [setUndoState, undoLastMove],
   );
 
   const startRematch = useCallback(() => {
-    const currentMatch = matchRef.current;
-    if (!currentMatch) return;
-    const nextMatch: MatchInfo = {
-      ...currentMatch,
-      color: currentMatch.color === "black" ? "white" : "black",
-    };
-    matchRef.current = nextMatch;
-    setMatch(nextMatch);
+    if (!matchRef.current) return;
+    roundRef.current += 1;
+    setRound(roundRef.current);
     resetRound();
-    setRound((current) => current + 1);
-    setPhase("playing");
-    setMessage(nextMatch.color === "black" ? "新一局开始，你执黑先行。 " : "新一局开始，对手执黑先行。 ");
-  }, [resetRound, setPhase]);
+    swapColorRef.current();
+    noticeRef.current("新一局开始，双方交换黑白。 ");
+  }, [resetRound]);
 
   const requestRematch = useCallback(() => {
-    if (!matchRef.current || !isOnline || phaseRef.current !== "finished" || rematchPendingRef.current) return;
+    if (phaseRef.current !== "playing" || !winnerRef.current || rematchPendingRef.current) return;
     setRematchState("outgoing");
-    setMessage("已邀请对手再来一局，等待对方确认… ");
-    sendPeerMessage({ type: "rematch-request" });
-  }, [isOnline, sendPeerMessage, setRematchState]);
+    noticeRef.current("已邀请对手再来一局，等待对方确认… ");
+    sendRef.current({ type: "rematch-request", roundId: roundRef.current });
+  }, [setRematchState]);
 
   const respondToRematch = useCallback(
     (accepted: boolean) => {
       if (rematchPendingRef.current !== "incoming") return;
-      sendPeerMessage({ type: "rematch-response", accepted });
-      if (accepted) {
-        startRematch();
-      } else {
+      sendRef.current({ type: "rematch-response", roundId: roundRef.current, accepted });
+      if (accepted) startRematch();
+      else {
         setRematchState(null);
-        setMessage("已拒绝再来一局的邀请。 ");
+        noticeRef.current("已拒绝再来一局的邀请。 ");
       }
     },
-    [sendPeerMessage, setRematchState, startRematch],
+    [setRematchState, startRematch],
   );
 
-  const attachChannel = useCallback(
-    (channel: RTCDataChannel, matchId: string) => {
-      channelRef.current = channel;
-      channel.onopen = () => {
-        if (matchRef.current?.matchId !== matchId) return;
-        setIsOnline(true);
-        setPhase("playing");
-        setMessage("直连已建立，黑方先行。落子后棋盘会实时同步。 ");
-        stopSignalPollingRef.current = true;
-      };
-      channel.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(String(event.data)) as {
-            type?: string;
-            index?: number | null;
-            color?: Color;
-            accepted?: boolean;
-            text?: string;
-            emoji?: string;
-          };
-          if (payload.type === "move" && (payload.color === "black" || payload.color === "white")) {
-            applyMove(Number(payload.index), payload.color, false);
-          }
-          if (payload.type === "hover") {
-            const hoverIndex = payload.index;
-            setOpponentHover(typeof hoverIndex === "number" && Number.isInteger(hoverIndex) && hoverIndex >= 0 && hoverIndex < BOARD_CELLS ? hoverIndex : null);
-          }
-          if (payload.type === "chat" && typeof payload.text === "string") {
-            const incomingText = payload.text.slice(0, 120);
-            setChatMessages((current) => [
-              ...current,
-              {
-                id: `opponent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                sender: "opponent",
-                text: incomingText,
-                sentAt: Date.now(),
-              },
-            ]);
-            if (!chatOpenRef.current) setUnreadChat((current) => current + 1);
-          }
-          if (payload.type === "emoji" && typeof payload.emoji === "string" && QUICK_EMOJIS.includes(payload.emoji)) {
-            showEmoji(payload.emoji, "opponent");
-          }
-          if (payload.type === "undo-request") {
-            setUndoState("incoming");
-            setMessage(`${matchRef.current?.opponentName ?? "对手"} 请求悔棋，请选择是否同意。 `);
-          }
-          if (payload.type === "undo-response") {
-            if (payload.accepted) {
-              undoLastMove();
-              setMessage("对方同意悔棋，回到上一步。 ");
-            } else {
-              setUndoState(null);
-              setMessage("对方拒绝了悔棋请求。 ");
-            }
-          }
-          if (payload.type === "rematch-request" && phaseRef.current === "finished") {
-            if (rematchPendingRef.current === "outgoing") {
-              sendPeerMessage({ type: "rematch-response", accepted: true });
-              startRematch();
-            } else {
-              setRematchState("incoming");
-              setMessage(`${matchRef.current?.opponentName ?? "对手"} 邀请你再来一局。 `);
-            }
-          }
-          if (payload.type === "rematch-response" && rematchPendingRef.current === "outgoing") {
-            if (payload.accepted) {
-              startRematch();
-            } else {
-              setRematchState(null);
-              setMessage("对手暂时不想继续这一局。 ");
-            }
-          }
-        } catch {
-          setMessage("收到了一条无法识别的对局消息。 ");
-        }
-      };
-      channel.onclose = () => {
-        if (matchRef.current?.matchId === matchId && (phaseRef.current === "playing" || phaseRef.current === "finished")) {
-          setIsOnline(false);
-          setPhase("error");
-          setMessage("对手的连接已断开，可以重新匹配。 ");
-        }
-      };
-      channel.onerror = () => {
-        if (matchRef.current?.matchId === matchId) {
-          setIsOnline(false);
-          setPhase("error");
-          setMessage("P2P 连接失败，可能是当前网络限制了直连。 ");
-        }
-      };
-    },
-    [applyMove, sendPeerMessage, setPhase, setRematchState, setUndoState, showEmoji, startRematch, undoLastMove],
-  );
-
-  const sendSignal = useCallback(async (nextMatch: MatchInfo, type: "offer" | "answer", description: RTCSessionDescriptionInit) => {
-    const result = await fetch(apiUrl("/api/signal"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        matchId: nextMatch.matchId,
-        playerId: playerIdRef.current,
-        type,
-        payload: JSON.stringify(description),
-      }),
-    });
-    if (!result.ok) throw new Error("信令消息没有送达。 ");
+  const sendHover = useCallback((index: number | null) => {
+    if (phaseRef.current !== "playing") return;
+    // Cursor position is disposable: losing a sample is invisible, but letting
+    // it queue behind a move on the reliable lane is not.
+    sendRef.current({ type: "hover", roundId: roundRef.current, index }, { lane: "input" });
   }, []);
 
-  const waitForIce = useCallback((peer: RTCPeerConnection) => {
-    if (peer.iceGatheringState === "complete") return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const timeout = window.setTimeout(resolve, 5000);
-      const onStateChange = () => {
-        if (peer.iceGatheringState === "complete") {
-          window.clearTimeout(timeout);
-          peer.removeEventListener("icegatheringstatechange", onStateChange);
-          resolve();
-        }
-      };
-      peer.addEventListener("icegatheringstatechange", onStateChange);
-    });
-  }, []);
-
-  const connectToMatch = useCallback(
-    async (nextMatch: MatchInfo) => {
-      closeConnection();
-      setPhase("connecting");
-      setMatch(nextMatch);
-      matchRef.current = nextMatch;
-      if (nextMatch.roomCode) setActiveRoomCode(nextMatch.roomCode);
-      signalCursorRef.current = 0;
-      stopSignalPollingRef.current = false;
-      setMessage(`已匹配到 ${nextMatch.opponentName}，正在建立安全直连… `);
-
-      const peer = new RTCPeerConnection({ iceServers: STUN_SERVERS });
-      peerRef.current = peer;
-      peer.onconnectionstatechange = () => {
-        if (["failed", "closed"].includes(peer.connectionState) && phaseRef.current === "connecting") {
-          setPhase("error");
-          setMessage("没有建立起 P2P 直连，请重新匹配。 ");
-        }
-      };
-
-      if (nextMatch.color === "black") {
-        attachChannel(peer.createDataChannel("gomoku"), nextMatch.matchId);
-      } else {
-        peer.ondatachannel = (event) => attachChannel(event.channel, nextMatch.matchId);
+  const handlePeerMessage = useCallback(
+    (message: PeerMessage) => {
+      if (typeof message.roundId === "number" && message.roundId < roundRef.current) return;
+      const color = message.color;
+      if (message.type === "move" && (color === "black" || color === "white")) {
+        applyMove(Number(message.index), color, false);
+        return;
       }
-
-      let handledOffer = false;
-      let handledAnswer = false;
-
-      const handleSignal = async (signal: { type: string; payload: string }) => {
-        const description = JSON.parse(signal.payload) as RTCSessionDescriptionInit;
-        if (signal.type === "offer" && nextMatch.color === "white" && !handledOffer) {
-          handledOffer = true;
-          await peer.setRemoteDescription(description);
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          await waitForIce(peer);
-          if (peer.localDescription) await sendSignal(nextMatch, "answer", peer.localDescription);
+      if (message.type === "hover") {
+        const hoverIndex = message.index;
+        setOpponentHover(
+          typeof hoverIndex === "number" && Number.isInteger(hoverIndex) && hoverIndex >= 0 && hoverIndex < BOARD_CELLS ? hoverIndex : null,
+        );
+        return;
+      }
+      if (message.type === "chat") {
+        chat.receiveChat(message.text);
+        return;
+      }
+      if (message.type === "emoji") {
+        chat.receiveEmoji(message.emoji);
+        return;
+      }
+      if (message.type === "undo-request") {
+        setUndoState("incoming");
+        noticeRef.current(`${matchRef.current?.opponentName ?? "对手"} 请求悔棋，请选择是否同意。 `);
+        return;
+      }
+      if (message.type === "undo-response") {
+        if (message.accepted) {
+          undoLastMove();
+          noticeRef.current("对方同意悔棋，回到上一步。 ");
+        } else {
+          setUndoState(null);
+          noticeRef.current("对方拒绝了悔棋请求。 ");
         }
-        if (signal.type === "answer" && nextMatch.color === "black" && !handledAnswer) {
-          handledAnswer = true;
-          await peer.setRemoteDescription(description);
+        return;
+      }
+      if (message.type === "rematch-request" && winnerRef.current) {
+        if (rematchPendingRef.current === "outgoing") {
+          sendRef.current({ type: "rematch-response", roundId: roundRef.current, accepted: true });
+          startRematch();
+        } else {
+          setRematchState("incoming");
+          noticeRef.current(`${matchRef.current?.opponentName ?? "对手"} 邀请你再来一局。 `);
         }
-      };
-
-      const pollSignals = async () => {
-        while (!stopSignalPollingRef.current && phaseRef.current === "connecting") {
-          try {
-            const result = await fetch(
-              apiUrl(`/api/signal?matchId=${encodeURIComponent(nextMatch.matchId)}&playerId=${encodeURIComponent(playerIdRef.current)}&after=${signalCursorRef.current}`),
-              { cache: "no-store" },
-            );
-            if (result.ok) {
-              const data = (await result.json()) as {
-                signals?: Array<{ id: number; type: string; payload: string }>;
-              };
-              for (const signal of data.signals ?? []) {
-                signalCursorRef.current = Math.max(signalCursorRef.current, signal.id);
-                await handleSignal(signal);
-              }
-            }
-          } catch {
-            // A later poll can recover from a transient network failure.
-          }
-          if (!stopSignalPollingRef.current) await delay(850);
+        return;
+      }
+      if (message.type === "rematch-response" && rematchPendingRef.current === "outgoing") {
+        if (message.accepted) startRematch();
+        else {
+          setRematchState(null);
+          noticeRef.current("对手暂时不想继续这一局。 ");
         }
-      };
-      void pollSignals();
-
-      if (nextMatch.color === "black") {
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        await waitForIce(peer);
-        if (peer.localDescription) await sendSignal(nextMatch, "offer", peer.localDescription);
       }
     },
-    [attachChannel, closeConnection, sendSignal, setPhase, waitForIce],
+    [applyMove, chat.receiveChat, chat.receiveEmoji, setRematchState, setUndoState, startRematch, undoLastMove],
   );
 
-  const monitorMatch = useCallback(
-    async (nextPlayerId: string) => {
-      matchPollingRef.current = true;
-      try {
-        while (matchPollingRef.current && (phaseRef.current === "matching" || phaseRef.current === "room-waiting")) {
-          const result = await fetch(apiUrl(`/api/match?gameId=gomoku&playerId=${encodeURIComponent(nextPlayerId)}`), { cache: "no-store" });
-          if (!result.ok) throw new Error("匹配服务暂时不可用。 ");
-          const data = (await result.json()) as { status?: string; match?: MatchInfo };
-          if (data.match) {
-            matchPollingRef.current = false;
-            await connectToMatch(data.match);
-            return;
-          }
-          await delay(1200);
-        }
-      } catch (error) {
-        matchPollingRef.current = false;
-        setPhase("error");
-        setMessage(readableError(error));
-      }
-    },
-    [connectToMatch, setPhase],
-  );
+  const p2p = useP2PMatch({
+    gameId: "gomoku",
+    onMessage: handlePeerMessage,
+    onConnected: chat.resetChat,
+    onReset: resetMatch,
+  });
+
+  useEffect(() => {
+    phaseRef.current = p2p.phase;
+    sendRef.current = p2p.send;
+    noticeRef.current = p2p.setMessage;
+    swapColorRef.current = p2p.swapColor;
+    matchRef.current = p2p.match;
+  }, [p2p.phase, p2p.send, p2p.setMessage, p2p.swapColor, p2p.match]);
 
   const startMatching = useCallback(async () => {
-    if (!playerIdRef.current) return;
     const cleanName = nickname.trim().replace(/\s+/g, " ").slice(0, 18);
     if (!cleanName) {
-      setMessage("先给自己取一个昵称吧。 ");
+      p2p.setMessage("先给自己取一个昵称吧。 ");
       return;
     }
-
-    window.localStorage.setItem("gomoku-nickname", cleanName);
+    window.localStorage.setItem(NICKNAME_KEY, cleanName);
     setNickname(cleanName);
-    matchPollingRef.current = false;
-    closeConnection();
-    resetBoard();
-    setMatch(null);
-    matchRef.current = null;
-    setActiveRoomCode("");
-    setPhase("matching");
-    setMessage("正在寻找一位在线棋手… ");
-
-    try {
-      await fetch(apiUrl(`/api/match?playerId=${encodeURIComponent(playerIdRef.current)}`), { method: "DELETE" }).catch(() => undefined);
-      const result = await fetch(apiUrl("/api/match"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "join", gameId: "gomoku", playerId: playerIdRef.current, nickname: cleanName }),
-      });
-      const data = (await result.json()) as { status?: string; match?: MatchInfo; error?: string };
-      if (!result.ok) throw new Error(data.error ?? "匹配服务暂时不可用。 ");
-      if (data.match) {
-        await connectToMatch(data.match);
-      } else {
-        void monitorMatch(playerIdRef.current);
-      }
-    } catch (error) {
-      setPhase("error");
-      setMessage(readableError(error));
-    }
-  }, [closeConnection, connectToMatch, monitorMatch, nickname, resetBoard, setPhase]);
-
-  const createRoom = useCallback(async () => {
-    if (!playerIdRef.current) return;
-    const cleanName = nickname.trim().replace(/\s+/g, " ").slice(0, 18);
-    if (!cleanName) {
-      setMessage("先给自己取一个昵称吧。 ");
-      return;
-    }
-
-    window.localStorage.setItem("gomoku-nickname", cleanName);
-    setNickname(cleanName);
-    matchPollingRef.current = false;
-    closeConnection();
-    resetBoard();
-    setMatch(null);
-    matchRef.current = null;
-    setActiveRoomCode("");
-    setPhase("matching");
-    setMessage("正在创建房间… ");
-
-    try {
-      await fetch(apiUrl(`/api/match?playerId=${encodeURIComponent(playerIdRef.current)}`), { method: "DELETE" }).catch(() => undefined);
-      const result = await fetch(apiUrl("/api/match"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "create_room", gameId: "gomoku", playerId: playerIdRef.current, nickname: cleanName }),
-      });
-      const data = (await result.json()) as { status?: string; roomCode?: string; error?: string };
-      if (!result.ok || !data.roomCode) throw new Error(data.error ?? "房间创建失败，请稍后重试。 ");
-      setRoomCode(data.roomCode);
-      setActiveRoomCode(data.roomCode);
-      setPhase("room-waiting");
-      setMessage(`房间号 ${data.roomCode} 已创建，等待朋友加入。 `);
-      void monitorMatch(playerIdRef.current);
-    } catch (error) {
-      setPhase("error");
-      setMessage(readableError(error));
-    }
-  }, [closeConnection, monitorMatch, nickname, resetBoard, setPhase]);
-
-  const joinRoom = useCallback(async () => {
-    if (!playerIdRef.current) return;
-    const cleanName = nickname.trim().replace(/\s+/g, " ").slice(0, 18);
-    const cleanCode = roomCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
-    if (!cleanName) {
-      setMessage("先给自己取一个昵称吧。 ");
-      return;
-    }
-    if (!/^[A-Z0-9]{4,8}$/.test(cleanCode)) {
-      setMessage("请输入有效的房间号。 ");
-      return;
-    }
-
-    window.localStorage.setItem("gomoku-nickname", cleanName);
-    setNickname(cleanName);
-    setRoomCode(cleanCode);
-    matchPollingRef.current = false;
-    closeConnection();
-    resetBoard();
-    setMatch(null);
-    matchRef.current = null;
-    setActiveRoomCode("");
-    setPhase("matching");
-    setMessage(`正在加入房间 ${cleanCode}… `);
-
-    try {
-      await fetch(apiUrl(`/api/match?playerId=${encodeURIComponent(playerIdRef.current)}`), { method: "DELETE" }).catch(() => undefined);
-      const result = await fetch(apiUrl("/api/match"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "join_room", gameId: "gomoku", roomCode: cleanCode, playerId: playerIdRef.current, nickname: cleanName }),
-      });
-      const data = (await result.json()) as { status?: string; roomCode?: string; match?: MatchInfo; error?: string };
-      if (!result.ok) throw new Error(data.error ?? "加入房间失败，请检查房间号。 ");
-      if (data.match) {
-        setActiveRoomCode(data.match.roomCode ?? cleanCode);
-        await connectToMatch(data.match);
-      } else {
-        setActiveRoomCode(data.roomCode ?? cleanCode);
-        setPhase("room-waiting");
-        setMessage(`房间号 ${data.roomCode ?? cleanCode} 仍在等待加入。 `);
-        void monitorMatch(playerIdRef.current);
-      }
-    } catch (error) {
-      setPhase("error");
-      setMessage(readableError(error));
-    }
-  }, [closeConnection, connectToMatch, monitorMatch, nickname, resetBoard, roomCode, setPhase]);
-
-  const copyRoomCode = useCallback(async () => {
-    if (!activeRoomCode) return;
-    try {
-      await navigator.clipboard.writeText(activeRoomCode);
-      setMessage("房间号已复制，发给朋友就可以开始。 ");
-    } catch {
-      setMessage(`请手动复制房间号：${activeRoomCode} `);
-    }
-  }, [activeRoomCode]);
+    await p2p.startMatching(cleanName);
+  }, [nickname, p2p]);
 
   useEffect(() => {
     startMatchingRef.current = startMatching;
   }, [startMatching]);
 
-  const cancelMatching = useCallback(async () => {
-    matchPollingRef.current = false;
-    closeConnection();
-    if (playerIdRef.current) {
-      await fetch(apiUrl(`/api/match?playerId=${encodeURIComponent(playerIdRef.current)}`), { method: "DELETE" }).catch(() => undefined);
+  const createRoom = useCallback(async () => {
+    const cleanName = nickname.trim().replace(/\s+/g, " ").slice(0, 18);
+    if (!cleanName) {
+      p2p.setMessage("先给自己取一个昵称吧。 ");
+      return;
     }
-    setMatch(null);
-    matchRef.current = null;
-    setActiveRoomCode("");
-    resetBoard();
-    setPhase("idle");
-    setMessage("随时可以再找一位对手。 ");
-  }, [closeConnection, resetBoard, setPhase]);
+    window.localStorage.setItem(NICKNAME_KEY, cleanName);
+    setNickname(cleanName);
+    await p2p.createRoom(cleanName);
+  }, [nickname, p2p]);
+
+  const joinRoom = useCallback(async () => {
+    const cleanName = nickname.trim().replace(/\s+/g, " ").slice(0, 18);
+    if (!cleanName) {
+      p2p.setMessage("先给自己取一个昵称吧。 ");
+      return;
+    }
+    window.localStorage.setItem(NICKNAME_KEY, cleanName);
+    setNickname(cleanName);
+    await p2p.joinRoom(cleanName, roomCode);
+  }, [nickname, p2p, roomCode]);
+
+  const copyRoomCode = useCallback(async () => {
+    if (!p2p.activeRoomCode) return;
+    try {
+      await navigator.clipboard.writeText(p2p.activeRoomCode);
+      p2p.setMessage("房间号已复制，发给朋友就可以开始。 ");
+    } catch {
+      p2p.setMessage(`请手动复制房间号：${p2p.activeRoomCode} `);
+    }
+  }, [p2p]);
 
   const placeStone = useCallback(
     (index: number) => {
-      if (!matchRef.current) return { ok: false, reason: "还没有匹配到对手。" };
+      const currentMatch = matchRef.current;
+      if (!currentMatch) return { ok: false, reason: "还没有匹配到对手。" };
       if (phaseRef.current !== "playing") return { ok: false, reason: "当前还不能落子。" };
-      if (turnRef.current !== matchRef.current.color) return { ok: false, reason: "现在是对手的回合。" };
-      return applyMove(index, matchRef.current.color, true)
-        ? { ok: true }
-        : { ok: false, reason: "这个位置不能落子。" };
+      if (turnRef.current !== currentMatch.color) return { ok: false, reason: "现在是对手的回合。" };
+      return applyMove(index, currentMatch.color, true) ? { ok: true } : { ok: false, reason: "这个位置不能落子。" };
     },
     [applyMove],
   );
@@ -884,15 +477,20 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
     return () => lifecycle.abort();
   }, []);
 
-  useEffect(() => () => {
-    matchPollingRef.current = false;
-    closeConnection();
-  }, [closeConnection]);
-
-  const isBusy = phase === "matching" || phase === "room-waiting" || phase === "connecting";
-  const myTurn = Boolean(match && phase === "playing" && turn === match.color && !undoPending);
-  const shownStatus = statusCopy(phase, match, turn, winner);
-  const opponentLabel = match?.opponentName ?? "等待对手";
+  const currentMatch = p2p.match;
+  const isFinished = winner !== null;
+  const isBusy = p2p.phase === "matching" || p2p.phase === "room-waiting" || p2p.phase === "connecting";
+  const locked = isBusy || p2p.phase === "playing";
+  const myTurn = Boolean(currentMatch && p2p.phase === "playing" && !isFinished && turn === currentMatch.color && !undoPending);
+  const shownStatus = gomokuStatus(p2p.phase, currentMatch, turn, winner);
+  const opponentLabel = currentMatch?.opponentName ?? "等待对手";
+  const phaseLabel =
+    isFinished ? "已结束"
+      : p2p.phase === "playing" ? "对局中"
+        : p2p.phase === "matching" ? "匹配中"
+          : p2p.phase === "room-waiting" ? "等人加入"
+            : p2p.phase === "connecting" ? "连接中"
+              : p2p.phase === "error" ? "需要重试" : "等待开始";
 
   return (
     <main className="gomoku-shell">
@@ -927,9 +525,9 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
               <p className="eyebrow">ONLINE MATCH · ROUND {round}</p>
               <h1>落一子，见真章。</h1>
             </div>
-            <div className={`phase-pill phase-${phase}`}>
+            <div className={`phase-pill phase-${isFinished ? "finished" : p2p.phase}`}>
               <span className="phase-dot" />
-              {phase === "playing" ? "对局中" : phase === "matching" ? "匹配中" : phase === "room-waiting" ? "等人加入" : phase === "connecting" ? "连接中" : phase === "finished" ? "已结束" : phase === "error" ? "需要重试" : "等待开始"}
+              {phaseLabel}
             </div>
           </div>
 
@@ -943,12 +541,12 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
                     const column = index % BOARD_SIZE;
                     return (
                       <button
-                        className={`board-cell ${cell ? `stone-${cell}` : ""} ${myTurn && !cell ? "cell-available" : ""} ${opponentHover === index && phase === "playing" ? "opponent-hover" : ""}`}
+                        className={`board-cell ${cell ? `stone-${cell}` : ""} ${myTurn && !cell ? "cell-available" : ""} ${opponentHover === index && p2p.phase === "playing" ? "opponent-hover" : ""}`}
                         key={index}
                         type="button"
                         role="gridcell"
                         aria-label={`${row + 1} 行，第${column + 1} 列${cell ? `，${cell === "black" ? "黑子" : "白子"}` : "，空位"}`}
-                        disabled={!myTurn || Boolean(cell) || Boolean(winner)}
+                        disabled={!myTurn || Boolean(cell) || isFinished}
                         style={{ left: `${(column / (BOARD_SIZE - 1)) * 100}%`, top: `${(row / (BOARD_SIZE - 1)) * 100}%` }}
                         onMouseEnter={() => sendHover(index)}
                         onMouseLeave={() => sendHover(null)}
@@ -961,30 +559,30 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
             </div>
-            {lastEmoji && (
-              <div className={`emoji-burst emoji-${lastEmoji.sender}`} aria-live="polite">
-                <span>{lastEmoji.emoji}</span>
-                <small>{lastEmoji.sender === "self" ? "你" : opponentLabel}</small>
+            {chat.lastEmoji && (
+              <div className={`emoji-burst emoji-${chat.lastEmoji.sender}`} aria-live="polite">
+                <span>{chat.lastEmoji.emoji}</span>
+                <small>{chat.lastEmoji.sender === "self" ? "你" : opponentLabel}</small>
               </div>
             )}
-            {(phase === "idle" || phase === "matching" || phase === "room-waiting" || phase === "connecting" || phase === "error") && (
-              <div className={`board-overlay overlay-${phase}`}>
-                {phase === "idle" && <Sparkles size={20} />}
-                {phase === "matching" && <LoaderCircle className="spin" size={22} />}
-                {phase === "room-waiting" && <KeyRound className="pulse" size={21} />}
-                {phase === "connecting" && <Radio className="pulse" size={22} />}
-                {phase === "error" && <CircleHelp size={21} />}
+            {(p2p.phase === "idle" || p2p.phase === "matching" || p2p.phase === "room-waiting" || p2p.phase === "connecting" || p2p.phase === "error") && (
+              <div className={`board-overlay overlay-${p2p.phase}`}>
+                {p2p.phase === "idle" && <Sparkles size={20} />}
+                {p2p.phase === "matching" && <LoaderCircle className="spin" size={22} />}
+                {p2p.phase === "room-waiting" && <KeyRound className="pulse" size={21} />}
+                {p2p.phase === "connecting" && <Radio className="pulse" size={22} />}
+                {p2p.phase === "error" && <CircleHelp size={21} />}
                 <strong>{shownStatus}</strong>
                 <span>
-                  {phase === "idle"
+                  {p2p.phase === "idle"
                     ? "先输入昵称，再点击右侧开始匹配。"
-                    : phase === "matching"
+                    : p2p.phase === "matching"
                       ? "遇到另一位棋手后会自动进入对局。"
-                      : phase === "room-waiting"
-                        ? <>把房间号 <b className="overlay-room-code">{activeRoomCode}</b> 发给朋友。</>
-                        : phase === "connecting"
+                      : p2p.phase === "room-waiting"
+                        ? <>把房间号 <b className="overlay-room-code">{p2p.activeRoomCode}</b> 发给朋友。</>
+                        : p2p.phase === "connecting"
                           ? "双方建立直连后，黑方先行。"
-                          : phase === "error"
+                          : p2p.phase === "error"
                             ? "换个网络或重新匹配试试。"
                             : ""}
                 </span>
@@ -992,14 +590,14 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
             )}
           </div>
 
-          {phase === "finished" && match && (
-            <section className={`round-result ${winner === "draw" ? "result-draw" : winner === match.color ? "result-win" : "result-loss"}`} aria-live="polite">
+          {isFinished && currentMatch && (
+            <section className={`round-result ${winner === "draw" ? "result-draw" : winner === currentMatch.color ? "result-win" : "result-loss"}`} aria-live="polite">
               <div className="round-result-copy">
                 <span className="result-icon"><Swords size={19} /></span>
                 <div>
                   <p>第 {round} 局结束</p>
                   <h2>{shownStatus}</h2>
-                  <span>{winner === "draw" ? "势均力敌，换手再试一次。" : winner === match.color ? "棋盘保留着，随时可以和同一位对手继续。" : "不离开房间，下一局直接扳回来。"}</span>
+                  <span>{winner === "draw" ? "势均力敌，换手再试一次。" : winner === currentMatch.color ? "棋盘保留着，随时可以和同一位对手继续。" : "不离开房间，下一局直接扳回来。"}</span>
                 </div>
               </div>
               <div className="round-result-actions">
@@ -1009,7 +607,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
                     <button className="result-primary" type="button" onClick={() => respondToRematch(true)}>接受再来一局</button>
                   </>
                 ) : (
-                  <button className="result-primary" type="button" disabled={!isOnline || rematchPending === "outgoing"} onClick={requestRematch}>
+                  <button className="result-primary" type="button" disabled={!p2p.isOnline || rematchPending === "outgoing"} onClick={requestRematch}>
                     <RotateCcw size={16} />
                     {rematchPending === "outgoing" ? "等待对手确认" : "和同一位对手再来一局"}
                   </button>
@@ -1021,7 +619,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
           <div className="board-footer">
             <span>15 × 15 标准棋盘</span>
             <span className="footer-separator">·</span>
-            <span>{isOnline ? "WebRTC 直连" : "等待连接"}</span>
+            <span>{p2p.isOnline ? "WebRTC 直连" : "等待连接"}</span>
             <span className="footer-separator">·</span>
             <span>先连成五子</span>
           </div>
@@ -1043,7 +641,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
               type="button"
               role="tab"
               aria-selected={mode === "quick"}
-              disabled={isBusy || phase === "playing" || phase === "finished"}
+              disabled={locked}
               onClick={() => setMode("quick")}
             >
               随机匹配
@@ -1053,7 +651,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
               type="button"
               role="tab"
               aria-selected={mode === "room"}
-              disabled={isBusy || phase === "playing" || phase === "finished"}
+              disabled={locked}
               onClick={() => setMode("room")}
             >
               房间对战
@@ -1069,23 +667,23 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
                   value={roomCode}
                   maxLength={8}
                   placeholder="输入 4–8 位房间号"
-                  disabled={isBusy || phase === "playing" || phase === "finished"}
+                  disabled={locked}
                   onChange={(event) => setRoomCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
                 />
               </label>
               <div className="room-actions">
-                <button className="room-action room-create" type="button" disabled={isBusy || phase === "playing" || phase === "finished"} onClick={createRoom}>
+                <button className="room-action room-create" type="button" disabled={locked} onClick={createRoom}>
                   <KeyRound size={16} /> 创建房间
                 </button>
-                <button className="room-action room-join" type="button" disabled={isBusy || phase === "playing" || phase === "finished" || roomCode.trim().length < 4} onClick={joinRoom}>
+                <button className="room-action room-join" type="button" disabled={locked || roomCode.trim().length < 4} onClick={joinRoom}>
                   <Users size={16} /> 加入房间
                 </button>
               </div>
-              {activeRoomCode && (
+              {p2p.activeRoomCode && (
                 <div className="room-code-card">
                   <div className="room-code-copy">
                     <span><Check size={14} /> 房间已就绪</span>
-                    <strong>{activeRoomCode}</strong>
+                    <strong>{p2p.activeRoomCode}</strong>
                   </div>
                   <button className="copy-button" type="button" onClick={copyRoomCode} aria-label="复制房间号">
                     <Copy size={15} /> 复制
@@ -1104,11 +702,11 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
                 value={nickname}
                 maxLength={18}
                 placeholder="比如：长安"
-                disabled={isBusy || phase === "playing" || phase === "finished"}
+                disabled={locked}
                 onChange={(event) => setNickname(event.target.value)}
               />
             </div>
-            <span className="color-chip chip-neutral">{match?.color === "black" ? "黑" : match?.color === "white" ? "白" : "—"}</span>
+            <span className="color-chip chip-neutral">{currentMatch?.color === "black" ? "黑" : currentMatch?.color === "white" ? "白" : "—"}</span>
           </div>
 
           <div className="versus-row">
@@ -1118,13 +716,13 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
           </div>
 
           <div className="player-card opponent-card">
-            <div className="player-avatar avatar-opponent">{match ? opponentLabel.slice(0, 1).toUpperCase() : "?"}</div>
+            <div className="player-avatar avatar-opponent">{currentMatch ? opponentLabel.slice(0, 1).toUpperCase() : "?"}</div>
             <div className="player-copy">
               <span className="player-label">对手</span>
               <strong>{opponentLabel}</strong>
             </div>
-            <span className={`color-chip ${match ? match.color === "black" ? "chip-white" : "chip-black" : "chip-neutral"}`}>
-              {match?.color === "black" ? "白" : match?.color === "white" ? "黑" : "—"}
+            <span className={`color-chip ${currentMatch ? currentMatch.color === "black" ? "chip-white" : "chip-black" : "chip-neutral"}`}>
+              {currentMatch?.color === "black" ? "白" : currentMatch?.color === "white" ? "黑" : "—"}
             </span>
           </div>
 
@@ -1132,43 +730,43 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
             <div className={`turn-stone ${turn}`} aria-hidden="true" />
             <div>
               <span className="player-label">当前回合</span>
-              <strong>{phase === "playing" ? myTurn ? "轮到你" : "等待对手" : shownStatus}</strong>
+              <strong>{p2p.phase === "playing" && !isFinished ? myTurn ? "轮到你" : "等待对手" : shownStatus}</strong>
             </div>
-            <span className={`connection-label ${isOnline ? "online" : ""}`}>
+            <span className={`connection-label ${p2p.isOnline ? "online" : ""}`}>
               <span />
-              {isOnline ? "已直连" : "未连接"}
+              {p2p.isOnline ? "已直连" : "未连接"}
             </span>
           </div>
 
-          {mode === "quick" && phase !== "finished" && (
-            <button className="primary-button" type="button" disabled={isBusy || phase === "playing"} onClick={startMatching}>
-              {phase === "error" ? <RotateCcw size={18} /> : <Swords size={18} />}
-              {phase === "error" ? "重新匹配" : "开始匹配"}
+          {mode === "quick" && !isFinished && (
+            <button className="primary-button" type="button" disabled={locked} onClick={startMatching}>
+              {p2p.phase === "error" ? <RotateCcw size={18} /> : <Swords size={18} />}
+              {p2p.phase === "error" ? "重新匹配" : "开始匹配"}
             </button>
           )}
           {isBusy && (
-            <button className="secondary-button" type="button" onClick={cancelMatching}>
-              {phase === "room-waiting" ? "关闭房间" : "取消匹配"}
+            <button className="secondary-button" type="button" onClick={p2p.cancel}>
+              {p2p.phase === "room-waiting" ? "关闭房间" : "取消匹配"}
             </button>
           )}
-          {(phase === "playing" || phase === "finished") && (
-            <button className="secondary-button" type="button" onClick={cancelMatching}>
+          {p2p.phase === "playing" && (
+            <button className="secondary-button" type="button" onClick={p2p.cancel}>
               <LogOut size={16} /> 离开当前房间
             </button>
           )}
 
-          {(phase === "playing" || phase === "finished") && match && (
+          {p2p.phase === "playing" && currentMatch && (
             <div className="undo-area">
               {undoPending === "incoming" ? (
                 <div className="undo-prompt">
-                  <span>{match.opponentName} 请求悔棋</span>
+                  <span>{currentMatch.opponentName} 请求悔棋</span>
                   <div className="undo-actions">
                     <button className="undo-accept" type="button" onClick={() => respondToUndo(true)}>同意</button>
                     <button className="undo-reject" type="button" onClick={() => respondToUndo(false)}>拒绝</button>
                   </div>
                 </div>
               ) : (
-                <button className="secondary-button undo-button" type="button" disabled={!moveHistory.length || !isOnline || Boolean(undoPending)} onClick={requestUndo}>
+                <button className="secondary-button undo-button" type="button" disabled={!moveHistory.length || !p2p.isOnline || Boolean(undoPending)} onClick={requestUndo}>
                   <Undo2 size={16} />
                   {undoPending === "outgoing" ? "等待对方确认" : "请求悔棋"}
                 </button>
@@ -1177,7 +775,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
             </div>
           )}
 
-          <p className="status-message" aria-live="polite">{message}</p>
+          <p className="status-message" aria-live="polite">{p2p.message}</p>
 
           <div className="trust-note">
             <ShieldCheck size={17} />
@@ -1186,87 +784,7 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
           <p className="tip-note"><span>TIP</span> 黑方先手；点击棋盘交叉点落子。</p>
         </aside>
 
-        <section className={`chat-dock independent-chat ${chatOpen ? "chat-open" : ""}`} aria-label="对局聊天">
-          <div className="chat-card-heading">
-            <div className="chat-title-group">
-              <span className="chat-title-icon"><MessageCircle size={17} /></span>
-              <div>
-                <strong>对局聊天</strong>
-                <span>{isOnline ? `正在和 ${opponentLabel} 直连聊天` : "匹配成功后即可发送消息"}</span>
-              </div>
-            </div>
-            <div className="chat-heading-actions">
-              <span className={`chat-status ${isOnline ? "online" : ""}`}><i />{isOnline ? "在线" : "离线"}</span>
-              {unreadChat > 0 && <b className="chat-unread">{unreadChat > 9 ? "9+" : unreadChat}</b>}
-              <button
-                className="chat-collapse"
-                type="button"
-                aria-label={chatOpen ? "收起聊天" : "展开聊天"}
-                aria-expanded={chatOpen}
-                aria-controls="gomoku-chat-panel"
-                onClick={() => {
-                  const nextOpen = !chatOpen;
-                  chatOpenRef.current = nextOpen;
-                  setChatOpen(nextOpen);
-                  if (nextOpen) setUnreadChat(0);
-                }}
-              >
-                {chatOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
-              </button>
-            </div>
-          </div>
-
-          {chatOpen && (
-            <div className="chat-panel" id="gomoku-chat-panel">
-              <div className="chat-messages" aria-live="polite">
-                {chatMessages.length === 0 ? (
-                  <div className="chat-empty">
-                    <MessageCircle size={20} />
-                    <p>{isOnline ? "已经连上了，先和对手打个招呼吧。" : "对局建立后，消息和表情都会通过 P2P 发送。"}</p>
-                  </div>
-                ) : (
-                  chatMessages.map((chatMessage) => (
-                    <div className={`chat-message ${chatMessage.sender === "self" ? "from-self" : "from-opponent"}`} key={chatMessage.id}>
-                      <small>{chatMessage.sender === "self" ? "你" : opponentLabel}</small>
-                      <span>{chatMessage.text}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="emoji-toolbar">
-                <button className={`emoji-toggle ${emojiOpen ? "active" : ""}`} type="button" disabled={!isOnline} onClick={() => setEmojiOpen((open) => !open)}>
-                  <SmilePlus size={15} /> 快捷表情
-                </button>
-                {emojiOpen && (
-                  <div className="emoji-picker" aria-label="快捷表情">
-                    {QUICK_EMOJIS.map((emoji) => (
-                      <button type="button" key={emoji} aria-label={`发送${emoji}`} onClick={() => sendEmoji(emoji)}>{emoji}</button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <form
-                className="chat-compose"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  sendChat();
-                }}
-              >
-                <input
-                  aria-label="聊天消息"
-                  value={chatInput}
-                  maxLength={120}
-                  disabled={!isOnline}
-                  placeholder={isOnline ? "输入消息，按回车发送" : "等待建立 P2P 连接"}
-                  onChange={(event) => setChatInput(event.target.value)}
-                />
-                <button type="submit" aria-label="发送消息" disabled={!isOnline || !chatInput.trim()}><Send size={16} /></button>
-              </form>
-            </div>
-          )}
-        </section>
+        <GameChat panelId="gomoku-chat-panel" isOnline={p2p.isOnline} opponentLabel={opponentLabel} chat={chat} />
         </div>
       </section>
 
