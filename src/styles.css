@@ -44,6 +44,7 @@ input:focus-visible {
 }
 
 .gomoku-shell,
+.game-shell,
 .arcade-shell {
   min-height: 100vh;
   padding: 24px clamp(18px, 5vw, 76px) 20px;
@@ -390,6 +391,432 @@ input:focus-visible {
 .stone-white .stone {
   background: radial-gradient(circle at 32% 24%, #fff 0 5%, #f8f5ee 38%, #c6bfb3 100%);
   box-shadow: 0 3px 4px rgba(57, 29, 5, 0.35), inset -2px -2px 4px rgba(117, 105, 90, 0.23);
+}
+
+/* --- Reversi -------------------------------------------------------------- */
+
+.reversi-board {
+  aspect-ratio: 1;
+  padding: clamp(5px, 1vw, 10px);
+  border: 1px solid rgba(81, 47, 15, 0.4);
+  border-radius: 7px;
+  background: linear-gradient(160deg, #43704f, #355941);
+  box-shadow: inset 0 2px 14px rgba(12, 32, 20, 0.35);
+}
+
+.reversi-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  height: 100%;
+}
+
+.reversi-cell {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(16, 44, 28, 0.5);
+  background: none;
+  cursor: default;
+}
+
+.reversi-cell > *,
+.reversi-cell::before,
+.reversi-cell::after {
+  grid-area: 1 / 1;
+}
+
+.reversi-cell.playable {
+  cursor: pointer;
+}
+
+.reversi-cell.playable::after {
+  content: "";
+  width: 24%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: rgba(243, 239, 231, 0.3);
+  transition: transform 130ms ease, background 130ms ease;
+}
+
+.reversi-cell.playable:hover::after {
+  background: rgba(243, 239, 231, 0.52);
+  transform: scale(1.6);
+}
+
+.reversi-cell.last-move::before {
+  content: "";
+  z-index: 1;
+  width: 34%;
+  aspect-ratio: 1;
+  border: 2px solid rgba(243, 239, 231, 0.85);
+  border-radius: 50%;
+}
+
+.reversi-score {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 15px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.reversi-score b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Connect Four --------------------------------------------------------- */
+
+.connect4-board {
+  aspect-ratio: 7 / 6;
+  padding: clamp(6px, 1.4vw, 13px);
+  border: 1px solid rgba(81, 47, 15, 0.4);
+  border-radius: 8px;
+  background: linear-gradient(160deg, #3568b3, #23508f);
+  box-shadow: inset 0 2px 14px rgba(6, 20, 44, 0.4);
+}
+
+.connect4-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  height: 100%;
+}
+
+.connect4-column {
+  display: grid;
+  grid-template-rows: repeat(6, minmax(0, 1fr));
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.connect4-column:disabled {
+  cursor: default;
+}
+
+.connect4-column:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.connect4-hole {
+  display: grid;
+  place-items: center;
+}
+
+.connect4-hole::before {
+  content: "";
+  grid-area: 1 / 1;
+  width: 84%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #17335f;
+  box-shadow: inset 0 3px 7px rgba(0, 0, 0, 0.5);
+}
+
+.connect4-hole > * {
+  grid-area: 1 / 1;
+}
+
+.connect4-hole.drop-target::before {
+  border: 2px dashed rgba(255, 255, 255, 0.45);
+}
+
+.connect4-hole.winning .stone {
+  box-shadow: 0 0 0 3px #f4c14b, 0 0 16px rgba(244, 193, 75, 0.65);
+}
+
+.connect4-card-visual {
+  background:
+    radial-gradient(circle at 75% 18%, rgba(178, 216, 255, 0.22), transparent 40%),
+    #1f3f70;
+}
+
+.connect4-mini-board {
+  display: grid;
+  grid-template-columns: repeat(4, 24px);
+  grid-template-rows: repeat(3, 24px);
+  gap: 4px;
+  padding: 10px;
+  border: 8px solid #1b3a66;
+  border-radius: 11px;
+  background: #2b5da8;
+  box-shadow: 0 14px 26px rgba(8, 22, 46, 0.36);
+}
+
+.connect4-mini-board span {
+  border-radius: 50%;
+  background: #16325c;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.45);
+}
+
+.connect4-mini-board span.black {
+  background: radial-gradient(circle at 34% 26%, #66615b 0 3%, #292724 20%, #101010 71%);
+  box-shadow: none;
+}
+
+.connect4-mini-board span.white {
+  background: radial-gradient(circle at 32% 24%, #fff 0 5%, #f8f5ee 38%, #c6bfb3 100%);
+  box-shadow: none;
+}
+
+/* --- Pong ------------------------------------------------------------------ */
+
+.pong-rim {
+  padding: clamp(8px, 1.6vw, 16px);
+}
+
+.pong-field {
+  position: relative;
+  aspect-ratio: 5 / 3;
+  overflow: hidden;
+  border: 1px solid rgba(81, 47, 15, 0.4);
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.06), transparent 60%),
+    #17251f;
+  box-shadow: inset 0 2px 18px rgba(0, 0, 0, 0.5);
+}
+
+.pong-net {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: repeating-linear-gradient(to bottom, rgba(243, 239, 231, 0.32) 0 9px, transparent 9px 20px);
+}
+
+.pong-score {
+  position: absolute;
+  top: 5%;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 14%;
+  color: rgba(243, 239, 231, 0.32);
+  font-size: clamp(26px, 5vw, 46px);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pong-score b.mine {
+  color: rgba(243, 239, 231, 0.92);
+}
+
+/* The transition is exactly one snapshot interval, so the opponent's paddle
+   and the ball glide between packets instead of stepping. */
+.pong-paddle,
+.pong-ball {
+  position: absolute;
+  transition: left 32ms linear, top 32ms linear;
+}
+
+.pong-paddle {
+  border-radius: 6px;
+  background: linear-gradient(180deg, #f7f3ea, #cdc4b4);
+  box-shadow: 0 0 14px rgba(243, 239, 231, 0.35);
+}
+
+.pong-paddle-white {
+  background: linear-gradient(180deg, #e8b76c, #b8843a);
+  box-shadow: 0 0 14px rgba(232, 183, 108, 0.4);
+}
+
+.pong-ball {
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 30%, #fff, #e9e2d4 60%, #b9b0a0);
+  box-shadow: 0 0 18px rgba(255, 250, 240, 0.55);
+}
+
+.pong-controls {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.pong-controls button {
+  min-width: 116px;
+  padding: 13px 20px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.pong-controls button:active:not(:disabled) {
+  background: var(--paper-deep);
+  transform: translateY(1px);
+}
+
+.pong-controls button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.pong-card-visual {
+  background:
+    radial-gradient(circle at 75% 18%, rgba(190, 255, 220, 0.18), transparent 40%),
+    #16241d;
+}
+
+.pong-mini-field {
+  position: relative;
+  width: 150px;
+  aspect-ratio: 5 / 3;
+  border: 8px solid #10201a;
+  border-radius: 10px;
+  background: #17251f;
+  box-shadow: 0 14px 26px rgba(4, 16, 11, 0.4);
+}
+
+.pong-mini-field::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: repeating-linear-gradient(to bottom, rgba(243, 239, 231, 0.3) 0 6px, transparent 6px 13px);
+}
+
+.pong-mini-field span {
+  position: absolute;
+  width: 5px;
+  border-radius: 3px;
+  background: #f2ede2;
+}
+
+.pong-mini-field span:nth-child(1) { left: 8%; top: 30%; height: 38%; }
+.pong-mini-field span:nth-child(2) { right: 8%; top: 45%; height: 38%; background: #e8b76c; }
+
+.pong-mini-field i {
+  position: absolute;
+  left: 46%;
+  top: 40%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fffaf0;
+  box-shadow: 0 0 10px rgba(255, 250, 240, 0.7);
+}
+
+/* --- 2048 ------------------------------------------------------------------ */
+
+.g2048-rim {
+  padding: clamp(9px, 1.6vw, 15px);
+  touch-action: none;
+}
+
+.g2048-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(5px, 1.1vw, 10px);
+  aspect-ratio: 1;
+  padding: clamp(5px, 1.1vw, 10px);
+  border-radius: 8px;
+  background: rgba(29, 28, 26, 0.24);
+}
+
+.g2048-cell {
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  font-size: clamp(17px, 3.4vw, 30px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-empty {
+  background: rgba(255, 253, 248, 0.09);
+}
+
+.tile-2 { background: #eee4da; color: #4a3a26; }
+.tile-4 { background: #ede0c8; color: #4a3a26; }
+.tile-8 { background: #f2b179; color: #fffaf0; }
+.tile-16 { background: #f59563; color: #fffaf0; }
+.tile-32 { background: #f67c5f; color: #fffaf0; }
+.tile-64 { background: #f65e3b; color: #fffaf0; }
+.tile-128 { background: #edcf72; color: #fffaf0; font-size: clamp(15px, 2.9vw, 26px); }
+.tile-256 { background: #edcc61; color: #fffaf0; font-size: clamp(15px, 2.9vw, 26px); }
+.tile-512 { background: #edc850; color: #fffaf0; font-size: clamp(15px, 2.9vw, 26px); }
+.tile-1024 { background: #edc53f; color: #fffaf0; font-size: clamp(13px, 2.4vw, 22px); }
+.tile-2048 { background: #edc22e; color: #fffaf0; font-size: clamp(13px, 2.4vw, 22px); box-shadow: 0 0 0 3px rgba(237, 194, 46, 0.45); }
+.tile-super { background: #3c3a32; color: #fffaf0; font-size: clamp(12px, 2.2vw, 20px); }
+
+/* Declared after the tile colours so the mini board keeps its own scale. */
+.g2048-mini {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.g2048-rival {
+  margin-top: 16px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+}
+
+.g2048-rival-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.g2048-rival-head b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.g2048-rival-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.g2048-card-visual {
+  background:
+    radial-gradient(circle at 75% 18%, rgba(255, 236, 190, 0.3), transparent 40%),
+    #7a6446;
+}
+
+.g2048-mini-board {
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  grid-template-rows: repeat(3, 34px);
+  gap: 5px;
+  padding: 10px;
+  border: 8px solid #6b573c;
+  border-radius: 11px;
+  background: #8a7458;
+  box-shadow: 0 14px 26px rgba(40, 30, 16, 0.36);
+}
+
+.g2048-mini-board span {
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .board-overlay {
@@ -1321,7 +1748,8 @@ input:focus-visible {
 }
 
 @media (max-width: 520px) {
-  .gomoku-shell {
+  .gomoku-shell,
+  .game-shell {
     padding: 15px 13px 18px;
   }
 
@@ -1819,6 +2247,35 @@ button.game-card {
 .stone-three { left: 70%; top: 70%; }
 .stone-four { left: 70%; top: 50%; }
 .stone-five { left: 50%; top: 70%; }
+.stone-six { left: 40%; top: 40%; }
+.stone-seven { left: 60%; top: 40%; }
+.stone-eight { left: 40%; top: 60%; }
+.stone-nine { left: 60%; top: 60%; }
+
+.reversi-card-visual {
+  background:
+    radial-gradient(circle at 75% 18%, rgba(196, 255, 219, 0.24), transparent 40%),
+    #27503a;
+}
+
+.reversi-mini-board {
+  position: relative;
+  width: 132px;
+  aspect-ratio: 1;
+  border: 10px solid #23432f;
+  border-radius: 13px;
+  background-color: #3d6a4a;
+  background-image:
+    linear-gradient(to right, rgba(10, 36, 22, 0.45) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(10, 36, 22, 0.45) 1px, transparent 1px);
+  background-size: 22.4px 22.4px;
+  box-shadow: 0 14px 26px rgba(8, 30, 18, 0.34);
+}
+
+.reversi-mini-board .mini-stone {
+  width: 24px;
+  height: 24px;
+}
 
 .available-badge {
   position: absolute;

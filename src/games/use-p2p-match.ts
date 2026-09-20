@@ -83,6 +83,8 @@ function normalizeMatch(input: Partial<P2PMatch>, gameId: string): P2PMatch {
   };
 }
 
+export type P2PMatchApi = ReturnType<typeof useP2PMatch>;
+
 export function useP2PMatch({ gameId, onMessage, onConnected, onDisconnected, onReset }: UseP2PMatchOptions) {
   const [phase, setPhaseState] = useState<MatchPhase>("idle");
   const [match, setMatch] = useState<P2PMatch | null>(null);

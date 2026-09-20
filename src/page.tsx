@@ -1,33 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   Bomb,
   Check,
   CircleHelp,
+  Contrast,
   Copy,
   Gamepad2,
+  Grid2X2,
   Grid3X3,
   KeyRound,
   LoaderCircle,
   LogOut,
+  MoveVertical,
   Radio,
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  SquareStack,
   Swords,
   Undo2,
   Users,
 } from "lucide-react";
 import { BombermanGame } from "./games/bomberman";
+import { Connect4Game } from "./games/connect4";
+import { G2048Game } from "./games/g2048";
+import { PongGame } from "./games/pong";
+import { ReversiGame } from "./games/reversi";
 import { GameChat, useGameChat } from "./games/game-chat";
 import { useP2PMatch, type MatchPhase, type P2PMatch, type PeerMessage, type SendLane } from "./games/use-p2p-match";
 
 type Color = "black" | "white";
 type Cell = Color | null;
 type MatchMode = "quick" | "room";
-type GameId = "gomoku" | "bomberman";
+type GameId = "gomoku" | "bomberman" | "reversi" | "connect4" | "pong" | "g2048";
 type MoveRecord = { index: number; color: Color };
 type PendingState = "outgoing" | "incoming" | null;
 
@@ -796,6 +804,62 @@ function GomokuGame({ onBack }: { onBack: () => void }) {
   );
 }
 
+const GAME_ICONS: Record<GameId, ReactNode> = {
+  gomoku: <Grid3X3 size={20} />,
+  bomberman: <Bomb size={20} />,
+  reversi: <Contrast size={20} />,
+  connect4: <Grid2X2 size={20} />,
+  pong: <MoveVertical size={20} />,
+  g2048: <SquareStack size={20} />,
+};
+
+function GameCardArt({ id }: { id: GameId }) {
+  if (id === "gomoku") {
+    return (
+      <div className="gomoku-mini-board">
+        <span className="mini-stone mini-black stone-one" />
+        <span className="mini-stone mini-white stone-two" />
+        <span className="mini-stone mini-black stone-three" />
+        <span className="mini-stone mini-white stone-four" />
+        <span className="mini-stone mini-black stone-five" />
+      </div>
+    );
+  }
+  if (id === "reversi") {
+    // The opening four, so the card reads as Othello at a glance.
+    return (
+      <div className="reversi-mini-board">
+        <span className="mini-stone mini-black stone-six" />
+        <span className="mini-stone mini-white stone-seven" />
+        <span className="mini-stone mini-white stone-eight" />
+        <span className="mini-stone mini-black stone-nine" />
+      </div>
+    );
+  }
+  if (id === "connect4") {
+    return (
+      <div className="connect4-mini-board">
+        {["", "", "", "", "", "", "black", "white", "black", "white", "black", "white"].map((color, cell) => (
+          <span className={color} key={cell} />
+        ))}
+      </div>
+    );
+  }
+  if (id === "pong") {
+    return <div className="pong-mini-field"><span /><span /><i /></div>;
+  }
+  if (id === "g2048") {
+    return (
+      <div className="g2048-mini-board">
+        {["tile-2", "tile-4", "tile-8", "tile-16", "tile-empty", "tile-32", "tile-empty", "tile-64", "tile-empty"].map((tile, cell) => (
+          <span className={tile} key={cell} />
+        ))}
+      </div>
+    );
+  }
+  return <div className="bomberman-mini-map"><span /><span /><span /><span /><Bomb size={34} /></div>;
+}
+
 const GAME_CATALOG = [
   {
     id: "gomoku" as const,
@@ -814,12 +878,36 @@ const GAME_CATALOG = [
     available: true,
   },
   {
-    id: "reversi",
+    id: "reversi" as const,
     name: "黑白棋",
-    description: "共享同一套 P2P 匹配与房间能力。",
+    description: "8 × 8 标准棋盘，夹住就翻面，棋子多的一方获胜。",
     players: "2 人",
-    status: "即将加入",
-    available: false,
+    status: "可游玩",
+    available: true,
+  },
+  {
+    id: "connect4" as const,
+    name: "四子棋",
+    description: "7 × 6 棋盘，把棋子丢进列里，先连成四个的一方获胜。",
+    players: "2 人",
+    status: "可游玩",
+    available: true,
+  },
+  {
+    id: "pong" as const,
+    name: "乒乓",
+    description: "实时对打的经典乒乓，先拿五分的一方获胜。",
+    players: "2 人",
+    status: "可游玩",
+    available: true,
+  },
+  {
+    id: "g2048" as const,
+    name: "2048 竞速",
+    description: "双方拿到同一副牌，各自拼数字，先到 2048 的人赢。",
+    players: "2 人",
+    status: "可游玩",
+    available: true,
   },
   {
     id: "tic-tac-toe",
@@ -859,7 +947,7 @@ function GameHub({ onSelect }: { onSelect: (game: GameId) => void }) {
           <p>每个小游戏共用 P2P 匹配、好友房间和直连通信能力。选中游戏后，再决定随机匹配或邀请朋友。</p>
         </div>
         <div className="hub-summary" aria-label="游戏平台信息">
-          <div><strong>2</strong><span>款可游玩</span></div>
+          <div><strong>{GAME_CATALOG.filter((game) => game.available).length}</strong><span>款可游玩</span></div>
           <div><strong>P2P</strong><span>对局直连</span></div>
           <div><strong>0</strong><span>注册步骤</span></div>
         </div>
@@ -868,19 +956,13 @@ function GameHub({ onSelect }: { onSelect: (game: GameId) => void }) {
       <section className="game-catalog" aria-label="小游戏列表">
         {GAME_CATALOG.map((game) => game.available ? (
           <button className="game-card game-card-available" type="button" key={game.id} onClick={() => onSelect(game.id as GameId)}>
-            <div className={`game-card-visual ${game.id === "gomoku" ? "gomoku-card-visual" : "bomberman-card-visual"}`} aria-hidden="true">
-              {game.id === "gomoku" ? <div className="gomoku-mini-board">
-                <span className="mini-stone mini-black stone-one" />
-                <span className="mini-stone mini-white stone-two" />
-                <span className="mini-stone mini-black stone-three" />
-                <span className="mini-stone mini-white stone-four" />
-                <span className="mini-stone mini-black stone-five" />
-              </div> : <div className="bomberman-mini-map"><span /><span /><span /><span /><Bomb size={34} /></div>}
+            <div className={`game-card-visual ${game.id}-card-visual`} aria-hidden="true">
+              <GameCardArt id={game.id as GameId} />
               <span className="available-badge"><span />在线</span>
             </div>
             <div className="game-card-content">
               <div className="game-card-title">
-                <span className="game-icon">{game.id === "gomoku" ? <Grid3X3 size={20} /> : <Bomb size={20} />}</span>
+                <span className="game-icon">{GAME_ICONS[game.id as GameId]}</span>
                 <div><strong>{game.name}</strong><span>{game.status}</span></div>
               </div>
               <p>{game.description}</p>
@@ -922,6 +1004,10 @@ export default function Home() {
     const syncRoute = () => {
       if (window.location.hash === "#gomoku") setSelectedGame("gomoku");
       else if (window.location.hash === "#bomberman") setSelectedGame("bomberman");
+      else if (window.location.hash === "#reversi") setSelectedGame("reversi");
+      else if (window.location.hash === "#connect4") setSelectedGame("connect4");
+      else if (window.location.hash === "#pong") setSelectedGame("pong");
+      else if (window.location.hash === "#g2048") setSelectedGame("g2048");
       else setSelectedGame(null);
     };
     syncRoute();
@@ -941,5 +1027,9 @@ export default function Home() {
 
   if (selectedGame === "gomoku") return <GomokuGame onBack={backToHub} />;
   if (selectedGame === "bomberman") return <BombermanGame onBack={backToHub} />;
+  if (selectedGame === "reversi") return <ReversiGame onBack={backToHub} />;
+  if (selectedGame === "connect4") return <Connect4Game onBack={backToHub} />;
+  if (selectedGame === "pong") return <PongGame onBack={backToHub} />;
+  if (selectedGame === "g2048") return <G2048Game onBack={backToHub} />;
   return <GameHub onSelect={openGame} />;
 }
