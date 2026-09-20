@@ -22,6 +22,10 @@ import { useP2PMatch, type PeerMessage, type PlayerColor } from "./use-p2p-match
 
 const GRID_WIDTH = 13;
 const GRID_HEIGHT = 11;
+const HOST_TICK_MS = 25;
+const STATE_BROADCAST_TICKS = 2;
+const MAX_PREDICTION_LEAD = 2;
+const IDLE_RECONCILE_MS = 650;
 const QUICK_EMOJIS = ["👏", "😂", "😮", "👍", "🤔", "🔥", "🎉", "🙏"];
 
 type Direction = "up" | "down" | "left" | "right";
@@ -135,9 +139,9 @@ function hasBomb(state: BomberState, index: number) {
 }
 
 function moveIntervalFor(player: PlayerState) {
-  if (player.speedLevel >= 3) return 65;
-  if (player.speedLevel === 2) return 82;
-  return 105;
+  if (player.speedLevel >= 3) return 50;
+  if (player.speedLevel === 2) return 75;
+  return 100;
 }
 
 function powerupDrop(seed: number, index: number): PowerupKind | null {
@@ -412,9 +416,17 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
           setPrediction({ x: serverPlayer.x, y: serverPlayer.y, nextMoveAt: 0, lastInputAt: Date.now() });
         } else {
           const distance = Math.abs(prediction.x - serverPlayer.x) + Math.abs(prediction.y - serverPlayer.y);
-          const isMoving = directionForInput(localInputRef.current) !== null;
-          const releaseHasSettled = !isMoving && Date.now() - prediction.lastInputAt > 160;
-          if (distance === 0 || distance > 3 || releaseHasSettled) {
+          const direction = directionForInput(localInputRef.current);
+          const isMoving = direction !== null;
+          const releaseHasSettled = !isMoving && Date.now() - prediction.lastInputAt > IDLE_RECONCILE_MS;
+          const serverIsAhead = direction !== null
+            && (serverPlayer.x - prediction.x) * direction[0] + (serverPlayer.y - prediction.y) * direction[1] > 0;
+          const sameMovementAxis = direction !== null
+            && (direction[0] === 0 ? serverPlayer.x === prediction.x : serverPlayer.y === prediction.y);
+          // Do not pull the guest backwards toward an older host snapshot while
+          // movement is held. Reconcile forward immediately, or settle once the
+          // input has been released and the host has had time to catch up.
+          if ((serverIsAhead && sameMovementAxis) || (distance > 0 && releaseHasSettled)) {
             setPrediction({ ...prediction, x: serverPlayer.x, y: serverPlayer.y });
           }
         }
@@ -511,10 +523,12 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
       remoteInputRef.current = { ...remoteInputRef.current, placeBomb: false };
       remoteBombQueuedRef.current = false;
       stateRef.current = next;
-      setState(next);
-      sendRef.current({ type: "bomberman-state", roundId: next.roundId, payload: next });
+      if (next !== previous) setState(next);
+      if (next.tick !== previous.tick && (next.tick % STATE_BROADCAST_TICKS === 0 || next.status !== previous.status)) {
+        sendRef.current({ type: "bomberman-state", roundId: next.roundId, payload: next });
+      }
       if (next.status === "finished" && previous.status !== "finished") setMessage(formatResult(next, currentMatch.color));
-    }, 50);
+    }, HOST_TICK_MS);
     return () => window.clearInterval(timer);
   }, [currentMatch, isHost, isOnline, round, setMessage]);
 
@@ -567,6 +581,9 @@ export function BombermanGame({ onBack }: { onBack: () => void }) {
       }
       if (!direction) return;
       if (now < prediction.nextMoveAt) return;
+      const serverPlayer = currentState.players[color];
+      const predictionLead = Math.abs(prediction.x - serverPlayer.x) + Math.abs(prediction.y - serverPlayer.y);
+      if (predictionLead >= MAX_PREDICTION_LEAD) return;
       const nextX = prediction.x + direction[0];
       const nextY = prediction.y + direction[1];
       const canMove = canWalkTo(currentState, color, nextX, nextY);

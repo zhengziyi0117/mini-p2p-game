@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../vendor/shadcn-tailwind-4.13.0.css";
 
 :root {
   --ink: #1d1c1a;
@@ -2115,6 +2118,7 @@ button.game-card {
 .bomberman-grid {
   position: relative;
   display: grid;
+  grid-template-rows: repeat(11, minmax(0, 1fr));
   gap: 2px;
   aspect-ratio: 13 / 11;
   overflow: hidden;
@@ -2128,7 +2132,8 @@ button.game-card {
 
 .bomberman-actors {
   --cell-gap: 2px;
-  --cell-size: calc((100% - (12 * var(--cell-gap))) / 13);
+  --cell-width: calc((100% - (12 * var(--cell-gap))) / 13);
+  --cell-height: calc((100% - (10 * var(--cell-gap))) / 11);
   position: absolute;
   inset: 4px;
   z-index: 6;
@@ -2246,12 +2251,11 @@ button.game-card {
 }
 
 .bomberman-actors .bomber-player {
-  left: calc(var(--actor-x) * (var(--cell-size) + var(--cell-gap)) + var(--cell-size) / 2);
-  top: calc(var(--actor-y) * (var(--cell-size) + var(--cell-gap)) + var(--cell-size) / 2);
-  width: calc(var(--cell-size) * 0.74);
-  height: calc(var(--cell-size) * 0.74);
+  left: calc(var(--actor-x) * (var(--cell-width) + var(--cell-gap)) + var(--cell-width) / 2);
+  top: calc(var(--actor-y) * (var(--cell-height) + var(--cell-gap)) + var(--cell-height) / 2);
+  width: calc(var(--cell-width) * 0.74);
+  height: calc(var(--cell-height) * 0.74);
   transform: translate(-50%, -50%);
-  transition: left 70ms linear, top 70ms linear;
 }
 
 .bomber-player::before,
@@ -2497,7 +2501,8 @@ button.game-card {
 
   .bomberman-actors {
     --cell-gap: 1px;
-    --cell-size: calc((100% - (12 * var(--cell-gap))) / 13);
+    --cell-width: calc((100% - (12 * var(--cell-gap))) / 13);
+    --cell-height: calc((100% - (10 * var(--cell-gap))) / 11);
     inset: 3px;
   }
 
