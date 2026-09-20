@@ -1,2 +1,7 @@
 node_modules/
 docs/
+
+# Never commit a lockfile here: a developer machine may resolve through a
+# corporate npm registry, which bakes unreachable tarball URLs into the file
+# and breaks the Pages workflow. Every dependency is pinned exactly instead.
+package-lock.json
